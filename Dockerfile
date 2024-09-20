@@ -2,14 +2,12 @@ FROM python:3.10-slim
 
 # Install dependencies
 RUN apt-get update && apt-get install -y \
-    tesseract-ocr \
-    libtesseract-dev \
-    poppler-utils && \
+    tesseract-ocr libtesseract-dev poppler-utils && \
     rm -rf /var/lib/apt/lists/*
 
 # Install Python packages
 COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
+RUN pip install --no-cache-dir  -r /app/requirements.txt
 
 # Copy app files
 COPY main.py /app/main.py

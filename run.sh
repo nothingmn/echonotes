@@ -65,13 +65,16 @@ done
 # Validate required arguments
 validate_args
 
+# clean up past runs
+ sudo rm -rf incoming/completed incoming/working incoming/* -R
+
 # Build the Docker image
 echo "Building Docker image $IMAGE_NAME..."
-docker build -t "$IMAGE_NAME" .
+docker build --no-cache -t "$IMAGE_NAME" .
 
 # Run the Docker container
 echo "Running Docker container..."
-docker run -v "$INCOMING_FOLDER:/app/incoming" \
+docker run --rm -v "$INCOMING_FOLDER:/app/incoming" \
            -v "$CONFIG_FILE:/app/config.yml" \
            -v "$PROMPT_FILE:/app/summarize-notes.md" \
            "$IMAGE_NAME"
