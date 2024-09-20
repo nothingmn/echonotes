@@ -164,7 +164,25 @@ def move_to_completed(file_path, output_files, completed_folder):
         logging.error(f"Error moving files to completed folder: {e}")
         raise
 
+# Extract text from a Word document (.docx)
+def extract_text_from_word(docx_path):
+    try:
+        logging.info(f"Extracting text from Word document: {docx_path}")
+        document = Document(docx_path)
+        text = '\n'.join([paragraph.text for paragraph in document.paragraphs])
 
+        base_filename = os.path.splitext(os.path.basename(docx_path))[0]
+        output_filename = os.path.join(os.path.dirname(docx_path), f"{base_filename}_extracted.txt")
+        with open(output_filename, 'w') as output_file:
+            output_file.write(text)
+        
+        logging.info(f"Extracted text written to {output_filename}")
+        return text, output_filename
+    except Exception as e:
+        logging.error(f"Error extracting text from {docx_path}: {e}")
+        raise
+
+    
 # Extract audio from video and save as MP3
 def extract_audio_from_video(video_path):
     try:
@@ -194,10 +212,14 @@ def extract_text_from_txt(file_name):
         
 
 # Convert MP3 to text using Whisper
-def convert_audio_to_text(audio_path):
+def convert_audio_to_text(audio_path, whisper_model):
     try:
         logging.info(f"Converting audio to text using Whisper: {audio_path}")
-        model = whisper.load_model("base")
+        
+        # Load the Whisper model
+        model = whisper.load_model(whisper_model)
+        
+        # Transcribe the audio file
         result = model.transcribe(audio_path)
 
         # Save the transcribed text to a markdown file
@@ -215,6 +237,7 @@ def convert_audio_to_text(audio_path):
 # Properly format the API response to Markdown
 def format_markdown(api_response):
     try:
+        formatted_markdown = ""
         response_text = api_response
 
         # Replace placeholder characters to better fit markdown format
@@ -248,6 +271,10 @@ class FileHandler(FileSystemEventHandler):
 
     def on_created(self, event):
         try:
+            # Access 'whisper_model' with a default value of 'base' if the key doesn't exist or is None/empty
+            whisper_model = self.config['whisper_model'] if 'whisper_model' in self.config and self.config['whisper_model'] else 'base'
+
+
             # Move the file to the working folder before processing
             working_file_path = move_to_working(event.src_path, self.working_folder)
             
@@ -284,7 +311,7 @@ class FileHandler(FileSystemEventHandler):
             elif working_file_path.endswith((".mp4", ".avi", ".mov", ".mkv")):
                 logging.info(f"Processing video file: {working_file_path}")
                 mp3_file = extract_audio_from_video(working_file_path)
-                text, extracted_text_file = convert_audio_to_text(mp3_file)
+                text, extracted_text_file = convert_audio_to_text(mp3_file, whisper_model)
                 full_text = prepend_markdown_prompt(text, "/app/summarize-notes.md")
                 api_response = send_to_api(self.config['api_url'], self.config['bearer_token'], self.config['model'], full_text)
                 output_filename = f"{working_file_path}.summary.md"
@@ -294,7 +321,7 @@ class FileHandler(FileSystemEventHandler):
 
             elif working_file_path.endswith(".mp3"):
                 logging.info(f"Processing MP3 file: {working_file_path}")
-                text, extracted_text_file = convert_audio_to_text(working_file_path)
+                text, extracted_text_file = convert_audio_to_text(working_file_path, whisper_model)
                 full_text = prepend_markdown_prompt(text, "/app/summarize-notes.md")
                 api_response = send_to_api(self.config['api_url'], self.config['bearer_token'], self.config['model'], full_text)
                 output_filename = f"{working_file_path}.summary.md"
@@ -302,8 +329,11 @@ class FileHandler(FileSystemEventHandler):
                     f.write(format_markdown(api_response))
                 move_to_completed(working_file_path, [extracted_text_file, output_filename], self.completed_folder)
 
+            logging.error(f"Processing is complete for {working_file_path}")
         except Exception as e:
             logging.error(f"Error processing {event.src_path}: {e}")
+
+        
 
 
 def show_ascii_art():
