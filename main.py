@@ -112,7 +112,9 @@ def send_to_api(api_url, bearer_token, model, content):
         logging.info(f"Response content: {response.text}")
 
         response.raise_for_status()  # Will raise an error for HTTP codes 4xx or 5xx
-        return response.text.json().get('response', 'No text found in response')
+        parsed_response = response.json()
+        logging.info(f"Parsed Response content: {parsed_response}")
+        return parsed_response.get('response', 'No text found in response')
     except requests.exceptions.HTTPError as http_err:
         logging.error(f"HTTP error occurred: {http_err}")
         logging.error("Please check the API URL, bearer token, and model in the configuration.")
