@@ -22,50 +22,51 @@ EchoNotes is a Python-based application that monitors a folder for new files, ex
 
 ## Requirements
 
-### System Dependencies
+### Quick Start via Docker
 
-- **ffmpeg**: Required for extracting audio from video files.
-- **tesseract**: Required for OCR when processing PDF files.
-  
-You can install these on Ubuntu with:
-```bash
-sudo apt-get update && sudo apt-get install -y ffmpeg tesseract-ocr
-```
+   ```base
+   cp config.sample.yml config.yml
+   ```
+   Edit config.yml and make sure you enter your correct Ollama endpoint, API token, etc.
+   
+   Then:
 
-### Python Libraries
+   ```bash
+   docker run -v /path/to/incoming:/app/incoming -v /path/to/config.yml:/app/config.yml -v /path/to/summarize-notes.md:/app/summarize-notes.md echonotes
+   ```
 
-All Python dependencies are managed via `requirements.txt`. Install them using:
-```bash
-pip install -r requirements.txt
-```
+   For example
 
-Key Python libraries used:
-- `PyPDF2`
-- `pdf2image`
-- `tesseract`
-- `whisper` (OpenAI Whisper for speech-to-text)
-- `python-docx` (for DOCX processing)
-- `ffmpeg-python`
-- `watchdog` (for directory monitoring)
-- `requests` (for sending summarization requests)
+   ```bash
+    docker run --rm -v "$(pwd)//incoming:/app/incoming" \
+            -v "$(pwd)/config.yml:/app/config.yml" \
+            -v "$(pwd)//summarize-notes.md:/app/summarize-notes.md" \
+            echonotes:latest
+   ```
 
-## Installation
+
+
+
+## Installation from source, via docker.
 
 ### Docker Setup
 
 1. **Build the Docker Image**:
+
    Clone the repository and build the Docker image:
    ```bash
    docker build -t echonotes .
    ```
 
 2. **Run the Docker Container**:
+
    Run the Docker container, mounting the appropriate volumes:
    ```bash
    docker run -v /path/to/incoming:/app/incoming -v /path/to/config.yml:/app/config.yml -v /path/to/summarize-notes.md:/app/summarize-notes.md echonotes
    ```
 
 3. **Pre-Download Whisper Models (Optional)**:
+
    The Whisper models are automatically downloaded, but you can pre-download them by running:
    ```bash
    docker exec -it <container_id> python -c "import whisper; whisper.load_model('base')"
