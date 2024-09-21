@@ -119,13 +119,7 @@ whisper_model: "base" # Specify the Whisper model to use ('tiny', 'base', 'small
 
 ### Markdown Prompt Customization
 
-The prompt file (`summarize-notes.md`) is used to prepend any instructions for summarization. An example structure is below:
-
-```markdown
-# Summarization Prompt
-
-Please summarize the following notes in a structured format using the Cornell Method.
-```
+The prompt file (`summarize-notes.md`) is used to prepend any instructions for summarization. Update it as you see fit.
 
 ## Logging
 
