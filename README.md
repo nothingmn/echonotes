@@ -1,141 +1,148 @@
-# echonotes
 
-Welcome to **echonotes**! This is an exciting and powerful Python application designed to automate the process of extracting handwritten notes from PDFs and summarizing them using a local AI model. Whether you're organizing notes or processing lecture scans, **echonotes** makes it simple and efficient. Running inside a Docker container, it monitors a folder for new PDF files, extracts text from them using OCR (Tesseract), and sends the text to a local API for summarization. All of this happens seamlessly and offline!
+# EchoNotes
+
+EchoNotes is a Python-based application that monitors a folder for new files, extracts the content (text, audio, video), summarizes it using a local instance of an LLM model (like Whisper and others), and saves the summarized output back to disk. It supports offline operation and can handle multiple file formats, including PDFs, Word documents, text files, video/audio files.
 
 ## Features
 
-- 📂 **Monitors folders** for new PDFs and automatically processes them.
-- 📝 **Extracts handwritten notes** from PDFs using Tesseract OCR.
-- ⚡ **Prepares content** with an additional Markdown prompt to enrich the extracted data.
-- 🤖 **Summarizes** the content using your local AI model through API requests.
-- 🚀 **Deploys quickly** inside a Docker container, fully offline.
-- 🛠️ **Customizable** via configuration file for easy API integration and model selection.
+- **Monitors a directory** for new files (PDF, DOCX, TXT, MP4, MP3 formats).
+- **Text Extraction**:
+  - PDF files (via PyPDF2 and Tesseract for OCR)
+  - Word documents (via python-docx)
+  - Plain text files
+  - Audio files (via Whisper for speech-to-text)
+  - Video files (audio extracted via FFmpeg and transcribed using Whisper)
+- **Summarization**: 
+  - Sends extracted text to a local LLM API for summarization.
+  - Supports customizable markdown prompts.
+- **Offline Operation**: 
+  - All processing (text extraction, transcription, summarization) can be done offline.
+  - Pre-downloads Whisper models and handles everything locally.
+- **Logging**: Extensive logging to help track operations and errors.
+
+## Requirements
+
+### System Dependencies
+
+- **ffmpeg**: Required for extracting audio from video files.
+- **tesseract**: Required for OCR when processing PDF files.
   
-## How It Works
-
-1. The app continuously monitors a folder (`/app/incoming`) for new PDF files.
-2. When a new PDF is added, it extracts the contents using Tesseract OCR.
-3. The extracted text is combined with a Markdown prompt and sent to a local AI model API.
-4. The summarized response is written back to the folder as a new text file.
-
-## Getting Started
-
-### Prerequisites
-
-- [Docker](https://www.docker.com/get-started) installed on your system.
-
-### Running echonotes with Docker
-
-First, clone the repository:
-
+You can install these on Ubuntu with:
 ```bash
-git clone https://github.com/your-repo/echonotes.git
-cd echonotes
+sudo apt-get update && sudo apt-get install -y ffmpeg tesseract-ocr
 ```
 
-Next, ensure that you have an appropriate folder structure with the necessary files:
+### Python Libraries
 
-- A folder where PDFs will be uploaded (`/path/to/your/pdfs`)
-- A markdown file for the summarization prompt (`/path/to/summarize-notes.md`)
-- A configuration file (`/path/to/config.yml`)
-
-Your configuration file (`config.yml`) should look something like this:
-
-```yaml
-api_url: "http://localhost:8000/api/v1/summarize"
-bearer_token: "your-token-here"
-model: "gpt-3.5-turbo"
+All Python dependencies are managed via `requirements.txt`. Install them using:
+```bash
+pip install -r requirements.txt
 ```
 
-Now, let's build and run the Docker container.
+Key Python libraries used:
+- `PyPDF2`
+- `pdf2image`
+- `tesseract`
+- `whisper` (OpenAI Whisper for speech-to-text)
+- `python-docx` (for DOCX processing)
+- `ffmpeg-python`
+- `watchdog` (for directory monitoring)
+- `requests` (for sending summarization requests)
 
-### Build and Run Using Docker
+## Installation
+
+### Docker Setup
 
 1. **Build the Docker Image**:
-    Run the following command to build the Docker image from the Dockerfile:
+   Clone the repository and build the Docker image:
+   ```bash
+   docker build -t echonotes .
+   ```
 
-    ```bash
-    docker build -t echonotes:latest .
-    ```
+2. **Run the Docker Container**:
+   Run the Docker container, mounting the appropriate volumes:
+   ```bash
+   docker run -v /path/to/incoming:/app/incoming -v /path/to/config.yml:/app/config.yml -v /path/to/summarize-notes.md:/app/summarize-notes.md echonotes
+   ```
 
-2. **Run the Container**:
-    Use the `run.sh` script to mount your directories and start the app.
+3. **Pre-Download Whisper Models (Optional)**:
+   The Whisper models are automatically downloaded, but you can pre-download them by running:
+   ```bash
+   docker exec -it <container_id> python -c "import whisper; whisper.load_model('base')"
+   ```
 
-    ```bash
-    ./run.sh echonotes:latest /path/to/your/pdfs /path/to/config.yml /path/to/summarize-notes.md
-    ```
+### Docker Compose Example
 
-This will start the container, and **echonotes** will begin monitoring the `/path/to/your/pdfs` directory for new PDF files. Once a PDF is detected, it will extract the text, prepend the Markdown prompt, send it to your local API for summarization, and save the result as a `.summary.txt` file in the same directory.
+You can use Docker Compose to manage the container:
 
-### Running echonotes with Docker Compose
-
-We can also leverage Docker Compose for a simplified and more automated approach. Here's how you can do it:
-
-1. **Create a `docker-compose.yml` file** in your project directory:
-
-    ```yaml
-    version: '3.8'
-    services:
-    echonotes:
-        build: .
-        volumes:
-        - ./incoming:/app/incoming        # Relative path to the folder where your PDFs will be dropped
-        - ./config.yml:/app/config.yml     # Relative path to the configuration file
-        - ./summarize-notes.md:/app/summarize-notes.md  # Relative path to the markdown prompt file
-    ```
-
-2. **Run Docker Compose**:
-
-    With Docker Compose, starting your app is as easy as running:
-
-    ```bash
-    docker-compose up --build
-    ```
-
-This will build the Docker image and launch the container, just like before. The application will monitor the `/path/to/your/pdfs` directory and process PDFs automatically.
-
-### Project Structure
-
-```
-echonotes/
-├── app/
-│   ├── main.py                # Main Python script for monitoring and processing PDFs
-│   ├── utils.py               # (Optional) Helper functions for logging or OCR
-│   ├── Dockerfile             # Dockerfile for building the container
-├── summarize-notes.md         # The markdown file used as a prompt for summarization
-├── config.yml                 # Configuration file for API settings
-├── run.sh                     # Bash script to build and run the app
-└── docker-compose.yml          # Docker Compose configuration file
+```yaml
+version: '3.8'
+services:
+  echonotes:
+    image: echonotes:latest
+    volumes:
+      - ./incoming:/app/incoming
+      - ./config.yml:/app/config.yml
+      - ./summarize-notes.md:/app/summarize-notes.md
+    restart: unless-stopped
 ```
 
-### Configuration
-
-**echonotes** uses a `config.yml` file for essential configuration options:
-
-- **api_url**: The URL of your local API for summarization.
-- **bearer_token**: A token used for authenticating with the API.
-- **model**: The model to be used in the API (e.g., `gpt-3.5-turbo`).
-
-You can also override these configurations by passing them as command-line arguments or mounting a new `config.yml` file.
-
-### Logging
-
-All operations, including errors, are extensively logged and can be viewed within the Docker container logs. To view real-time logs, you can use the following command:
+Run the service with:
 
 ```bash
-docker logs -f <container_id>
+docker-compose up -d
 ```
 
-### Contributing
+## Usage
 
-We welcome contributions to make **echonotes** even better! If you'd like to contribute, feel free to open an issue or submit a pull request. Together, we can make note processing even easier!
+EchoNotes monitors the `/app/incoming` directory for new files. When it detects a new file, it processes it according to the file type:
 
-### License
+- **PDF**: Extracts text using PyPDF2 or OCR via Tesseract if needed.
+- **Word Documents (DOCX)**: Extracts text using `python-docx`.
+- **Text Files (TXT)**: Reads the plain text.
+- **Audio Files (MP3)**: Transcribes speech to text using Whisper.
+- **Video Files (MP4)**: Extracts audio using FFmpeg, then transcribes it with Whisper.
 
-This project is licensed under the MIT License.
+Once the text is extracted, it is summarized by sending the text and a customizable markdown prompt to a local LLM API.
 
----
+## Configuration
 
-Thank you for choosing **echonotes**! We're excited to see how you'll use it to streamline your note-taking workflow.
+The application is configured via a `config.yml` file mounted into the Docker container. An example configuration file is shown below:
 
-Happy summarizing! ✨
+```yaml
+api_url: "http://localhost:5000/api/summarize"
+bearer_token: "your_api_token_here"
+model: "base"
+whisper_model: "base" # Specify the Whisper model to use ('tiny', 'base', 'small', 'medium', 'large')
+```
+
+### Markdown Prompt Customization
+
+The prompt file (`summarize-notes.md`) is used to prepend any instructions for summarization. An example structure is below:
+
+```markdown
+# Summarization Prompt
+
+Please summarize the following notes in a structured format using the Cornell Method.
+```
+
+## Logging
+
+The application logs all activities and errors to help with debugging and tracking its operations. The log includes details about:
+- Files processed
+- Errors encountered
+- Summaries generated
+
+## Folder Structure
+
+- **incoming**: Monitored folder where new files are placed for processing.
+- **working**: Temporary folder where files are processed.
+- **completed**: Once processed, files (and summaries) are moved to the `completed` folder.
+
+## Contributing
+
+We welcome contributions to EchoNotes! Please fork the repository and submit a pull request with your changes.
+
+## License
+
+EchoNotes is licensed under the MIT License.
