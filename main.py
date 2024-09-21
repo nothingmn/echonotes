@@ -182,7 +182,7 @@ def extract_text_from_word(docx_path):
         logging.error(f"Error extracting text from {docx_path}: {e}")
         raise
 
-    
+
 # Extract audio from video and save as MP3
 def extract_audio_from_video(video_path):
     try:
@@ -329,7 +329,7 @@ class FileHandler(FileSystemEventHandler):
                     f.write(format_markdown(api_response))
                 move_to_completed(working_file_path, [extracted_text_file, output_filename], self.completed_folder)
 
-            logging.error(f"Processing is complete for {working_file_path}")
+            logging.info(f"Processing is complete for {working_file_path}")
         except Exception as e:
             logging.error(f"Error processing {event.src_path}: {e}")
 
