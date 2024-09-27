@@ -1,0 +1,14 @@
+api_url: "http://10.0.0.242:3000/ollama/api/generate"
+bearer_token: "sk-9906764asdfsadfsdfafds5eb46071b8b"
+model: "mistral-small:22b"
+whisper_model: "tiny"  #see the dockerfile, we pre-download tiny, base, and small
+
+
+
+# Whisper Model Sizes and Performance
+# Model   Size (Parameters)       Speed   Accuracy (Relative)   GPU   RAM Requirement (FP16)
+# tiny    39 M                Fast        Low                         ~1 GB
+# base    74 M                Fast        Medium                          ~1 GB
+# small   244 M               Medium  High                          ~2 GB
+# medium        769 M                 Slow        Higher                          ~5 GB
+# large   1550 M                    Slow          Highest                         ~10 GB
