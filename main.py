@@ -1,7 +1,10 @@
 import os
+import pickle
 import queue
+import re
 import threading
 import time
+from contextlib import contextmanager
 import pytesseract
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -46,6 +49,7 @@ DEFAULT_LLM_TIMEOUT_SECONDS = 120
 DEFAULT_CHUNK_MAX_INPUT_CHARS = 24000
 DEFAULT_CHUNK_TARGET_CHARS = 16000
 DEFAULT_CHUNK_OVERLAP_CHARS = 400
+TORCH_LOAD_PATCH_LOCK = threading.Lock()
 DEFAULT_TRANSCRIPT_FORMAT_PROMPT = """Rewrite the following raw transcript as clean, readable Markdown.
 
 ## Goals
@@ -331,6 +335,81 @@ def load_prompt(prompt_path, default_content):
         with open(prompt_path, 'r') as prompt_file:
             return prompt_file.read()
     return default_content
+
+
+def strip_outer_fenced_block(text):
+    if not isinstance(text, str):
+        return ""
+
+    stripped = text.strip()
+    if not stripped:
+        return ""
+
+    for fence in ("```", "~~~"):
+        if not stripped.startswith(fence):
+            continue
+
+        lines = stripped.splitlines()
+        if len(lines) < 2:
+            return stripped
+
+        if lines[0].strip().startswith(fence) and lines[-1].strip() == fence:
+            return "\n".join(lines[1:-1]).strip()
+
+    return stripped
+
+
+def sanitize_markdown_output(text):
+    return strip_outer_fenced_block((text or "").replace("\r\n", "\n")).strip()
+
+
+@contextmanager
+def whisperx_torch_load_compat():
+    try:
+        import torch
+        from omegaconf import DictConfig, ListConfig
+        from omegaconf.base import ContainerMetadata
+    except Exception:
+        yield
+        return
+
+    serialization = getattr(torch, "serialization", None)
+    if serialization and hasattr(serialization, "add_safe_globals"):
+        try:
+            serialization.add_safe_globals([ListConfig, DictConfig, ContainerMetadata])
+        except Exception as safe_globals_error:
+            logging.debug(f"Unable to register torch safe globals for WhisperX: {safe_globals_error}")
+
+    original_torch_load = torch.load
+
+    def compat_torch_load(*args, **kwargs):
+        try:
+            return original_torch_load(*args, **kwargs)
+        except pickle.UnpicklingError as exc:
+            if kwargs.get("weights_only", True) is False:
+                raise
+
+            if "Weights only load failed" not in str(exc):
+                raise
+
+            retry_kwargs = dict(kwargs)
+            retry_kwargs["weights_only"] = False
+            if args and hasattr(args[0], "seek"):
+                try:
+                    args[0].seek(0)
+                except Exception as seek_error:
+                    logging.debug(f"Unable to rewind checkpoint stream before torch.load retry: {seek_error}")
+            logging.warning(
+                "Retrying torch.load with weights_only=False for WhisperX/pyannote checkpoint compatibility"
+            )
+            return original_torch_load(*args, **retry_kwargs)
+
+    with TORCH_LOAD_PATCH_LOCK:
+        torch.load = compat_torch_load
+        try:
+            yield
+        finally:
+            torch.load = original_torch_load
 
 
 def get_summary_prompt_path(config):
@@ -635,19 +714,21 @@ class WhisperXTranscriber:
             f"Loading WhisperX model at startup "
             f"(device={self.device}, compute_type={self.compute_type}, model={self.whisper_model})"
         )
-        self.model = whisperx.load_model(
-            self.whisper_model,
-            self.device,
-            compute_type=self.compute_type,
-        )
+        with whisperx_torch_load_compat():
+            self.model = whisperx.load_model(
+                self.whisper_model,
+                self.device,
+                compute_type=self.compute_type,
+            )
 
     def _get_align_model(self, language_code):
         if language_code not in self.align_models:
             logging.info(f"Loading WhisperX alignment model for language: {language_code}")
-            self.align_models[language_code] = whisperx.load_align_model(
-                language_code=language_code,
-                device=self.device,
-            )
+            with whisperx_torch_load_compat():
+                self.align_models[language_code] = whisperx.load_align_model(
+                    language_code=language_code,
+                    device=self.device,
+                )
         return self.align_models[language_code]
 
     def transcribe(self, audio_path):
@@ -828,7 +909,9 @@ class FileProcessor:
 
     def generate_formatted_transcript(self, prompt_content, transcript_text):
         if not self.chunking["enabled"] or len(transcript_text) <= self.chunking["max_input_chars"]:
-            return self.llm_client.generate(build_prompt(prompt_content, transcript_text))
+            return sanitize_markdown_output(
+                self.llm_client.generate(build_prompt(prompt_content, transcript_text))
+            )
 
         chunks = split_text_into_chunks(
             transcript_text,
@@ -845,9 +928,11 @@ class FileProcessor:
                 "Format this chunk only and do not add summaries.\n\n"
                 f"# INPUT:\n\n{chunk}"
             )
-            formatted_chunks.append(self.llm_client.generate(chunk_prompt).strip())
+            formatted_chunk = sanitize_markdown_output(self.llm_client.generate(chunk_prompt))
+            if formatted_chunk:
+                formatted_chunks.append(formatted_chunk)
 
-        return "\n\n".join(chunk for chunk in formatted_chunks if chunk)
+        return "\n\n".join(formatted_chunks)
 
     def generate_summary(self, text):
         prompt_content = load_prompt(get_summary_prompt_path(self.config), "")
@@ -1015,14 +1100,7 @@ class WorkerPool:
 # Properly format the API response to Markdown
 def format_markdown(api_response):
     try:
-        formatted_markdown = ""
-        response_text = api_response
-
-        # Replace placeholder characters to better fit markdown format
-        if response_text:
-            formatted_markdown += response_text.replace('\n', '\n\n')  # Double line break for markdown paragraphs
-        
-        return formatted_markdown
+        return sanitize_markdown_output(api_response)
     except Exception as e:
         logging.error(f"Error formatting API response to Markdown: {e}")
         return ""
