@@ -1,4 +1,6 @@
 import os
+import queue
+import threading
 import time
 import pytesseract
 from watchdog.observers import Observer
@@ -13,6 +15,24 @@ import json
 import shutil
 import ffmpeg
 import whisperx
+
+
+SUPPORTED_EXTENSIONS = (".pdf", ".docx", ".txt", ".mp3", ".mp4", ".avi", ".mov", ".mkv")
+DEFAULT_TRANSCRIPT_FORMAT_PROMPT = """Rewrite the following raw transcript as clean, readable Markdown.
+
+## Goals
+- Preserve the speaker meaning and factual content.
+- Fix obvious transcription punctuation and paragraph breaks.
+- Group the transcript into readable paragraphs.
+- Keep names, technical terms, and numbers intact when possible.
+
+## Output Instructions
+- Output only the formatted transcript in Markdown.
+- Start with a single `# Transcript` heading.
+- Do not summarize or omit content.
+- Do not add commentary, warnings, or analysis.
+- Do not invent speaker names.
+"""
 
 
 # Setup logging
@@ -30,6 +50,22 @@ def load_config(config_path="/app/config.yml"):
     except yaml.YAMLError as e:
         logging.error(f"Error reading configuration file {config_path}: {e}")
         raise
+
+
+def get_worker_count(config):
+    configured_count = config.get("worker_count")
+    if configured_count:
+        return max(1, int(configured_count))
+
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            return 1
+    except Exception:
+        pass
+
+    return max(1, min(4, os.cpu_count() or 1))
 
 
 # Send extracted text to local API for summarization
@@ -77,6 +113,13 @@ def send_to_api(api_url, bearer_token, model, content):
     except Exception as e:
         logging.error(f"An error occurred while sending a request to the API: {e}")
         raise
+
+
+def load_prompt(prompt_path, default_content):
+    if prompt_path and os.path.exists(prompt_path):
+        with open(prompt_path, 'r') as prompt_file:
+            return prompt_file.read()
+    return default_content
 
 # Helper function to extract text from PDF using OCR and write it back to the same folder
 def extract_text_from_pdf(pdf_path):
@@ -143,6 +186,24 @@ def move_to_working(file_path, working_folder):
     except Exception as e:
         logging.error(f"Error moving file to working folder: {e}")
         raise
+
+
+def wait_for_file_ready(file_path, timeout=300, check_interval=1):
+    deadline = time.time() + timeout
+    last_size = None
+
+    while time.time() < deadline:
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"File {file_path} no longer exists")
+
+        current_size = os.path.getsize(file_path)
+        if last_size is not None and current_size == last_size:
+            return
+
+        last_size = current_size
+        time.sleep(check_interval)
+
+    raise TimeoutError(f"Timed out waiting for {file_path} to finish writing")
 
 
 # Move processed files to the "completed" folder
@@ -240,7 +301,7 @@ class WhisperXTranscriber:
             )
         return self.align_models[language_code]
 
-    def transcribe_to_markdown(self, audio_path):
+    def transcribe(self, audio_path):
         try:
             logging.info(
                 f"Converting audio to text using WhisperX: {audio_path} "
@@ -277,16 +338,174 @@ class WhisperXTranscriber:
             if not transcript:
                 transcript = result.get("text", "").strip()
 
-            base_filename = os.path.splitext(os.path.basename(audio_path))[0]
-            output_filename = os.path.join(os.path.dirname(audio_path), f"{base_filename}_transcribed.md")
-            with open(output_filename, 'w') as output_file:
-                output_file.write(f"# Transcribed Audio\n\n{transcript}")
-
-            logging.info(f"Transcribed text saved to {output_filename}")
-            return transcript, output_filename
+            return transcript
         except Exception as e:
             logging.error(f"Error transcribing audio from {audio_path}: {e}")
             raise
+
+
+class FileProcessor:
+    def __init__(self, config, working_folder, completed_folder, transcriber):
+        self.config = config
+        self.working_folder = working_folder
+        self.completed_folder = completed_folder
+        self.transcriber = transcriber
+
+    def process(self, source_path):
+        wait_for_file_ready(source_path)
+        working_file_path = move_to_working(source_path, self.working_folder)
+        output_files = []
+
+        try:
+            if working_file_path.endswith(".pdf"):
+                logging.info(f"Processing PDF: {working_file_path}")
+                text, extracted_text_file = extract_text_from_pdf(working_file_path)
+                output_files.append(extracted_text_file)
+
+            elif working_file_path.endswith(".docx"):
+                logging.info(f"Processing Word document: {working_file_path}")
+                text, extracted_text_file = extract_text_from_word(working_file_path)
+                output_files.append(extracted_text_file)
+
+            elif working_file_path.endswith(".txt"):
+                logging.info(f"Processing text file: {working_file_path}")
+                text, extracted_text_file = extract_text_from_txt(working_file_path)
+                output_files.append(extracted_text_file)
+
+            elif working_file_path.endswith((".mp4", ".avi", ".mov", ".mkv")):
+                logging.info(f"Processing video file: {working_file_path}")
+                mp3_file = extract_audio_from_video(working_file_path)
+                output_files.append(mp3_file)
+                text = self.transcriber.transcribe(mp3_file)
+                text, extracted_text_file = self.format_and_write_transcript(mp3_file, text)
+                output_files.append(extracted_text_file)
+
+            elif working_file_path.endswith(".mp3"):
+                logging.info(f"Processing MP3 file: {working_file_path}")
+                text = self.transcriber.transcribe(working_file_path)
+                text, extracted_text_file = self.format_and_write_transcript(working_file_path, text)
+                output_files.append(extracted_text_file)
+
+            else:
+                logging.warning(f"Skipping unsupported file type: {working_file_path}")
+                return
+
+            full_text = prepend_markdown_prompt(text, "/app/summarize-notes.md")
+            api_response = send_to_api(
+                self.config['api_url'],
+                self.config['bearer_token'],
+                self.config['model'],
+                full_text,
+            )
+            output_filename = f"{working_file_path}.summary.md"
+            with open(output_filename, 'w') as f:
+                f.write(format_markdown(api_response))
+            output_files.append(output_filename)
+
+            move_to_completed(working_file_path, output_files, self.completed_folder)
+            logging.info(f"Processing is complete for {working_file_path}")
+        except Exception:
+            logging.exception(f"Error processing {working_file_path}")
+            raise
+
+    def format_and_write_transcript(self, audio_path, transcript):
+        formatted_transcript = transcript
+
+        if self.config.get("format_transcripts", True):
+            try:
+                logging.info(f"Formatting transcript for {audio_path}")
+                prompt_path = self.config.get("transcript_format_prompt_path", "/app/format-transcript.md")
+                prompt_content = load_prompt(prompt_path, DEFAULT_TRANSCRIPT_FORMAT_PROMPT)
+                formatting_prompt = f"{prompt_content}\n\n# INPUT:\n\n{transcript}"
+                api_response = send_to_api(
+                    self.config['api_url'],
+                    self.config['bearer_token'],
+                    self.config['model'],
+                    formatting_prompt,
+                )
+                candidate = format_markdown(api_response).strip()
+                if candidate:
+                    formatted_transcript = candidate
+                else:
+                    logging.warning(f"Transcript formatter returned empty output for {audio_path}; using raw transcript")
+            except Exception as format_error:
+                logging.warning(f"Transcript formatting failed for {audio_path}; using raw transcript: {format_error}")
+
+        if not formatted_transcript.startswith("#"):
+            formatted_transcript = f"# Transcript\n\n{formatted_transcript}"
+
+        base_filename = os.path.splitext(os.path.basename(audio_path))[0]
+        output_filename = os.path.join(os.path.dirname(audio_path), f"{base_filename}_transcribed.md")
+        with open(output_filename, 'w') as output_file:
+            output_file.write(formatted_transcript)
+
+        logging.info(f"Transcribed text saved to {output_filename}")
+        return formatted_transcript, output_filename
+
+
+class ProcessingWorker(threading.Thread):
+    def __init__(self, worker_id, job_queue, config, working_folder, completed_folder, whisper_model):
+        super().__init__(daemon=True, name=f"worker-{worker_id}")
+        self.worker_id = worker_id
+        self.job_queue = job_queue
+        self.config = config
+        self.working_folder = working_folder
+        self.completed_folder = completed_folder
+        self.whisper_model = whisper_model
+        self.stop_event = threading.Event()
+        self.processor = None
+
+    def stop(self):
+        self.stop_event.set()
+        self.job_queue.put(None)
+
+    def run(self):
+        logging.info(f"Starting processing worker {self.worker_id}")
+        transcriber = WhisperXTranscriber(self.whisper_model)
+        self.processor = FileProcessor(
+            self.config,
+            self.working_folder,
+            self.completed_folder,
+            transcriber,
+        )
+
+        while not self.stop_event.is_set():
+            job = self.job_queue.get()
+            try:
+                if job is None:
+                    continue
+                self.processor.process(job)
+            except Exception:
+                logging.exception(f"Worker failed for job: {job}")
+            finally:
+                self.job_queue.task_done()
+
+
+class WorkerPool:
+    def __init__(self, worker_count, job_queue, config, working_folder, completed_folder, whisper_model):
+        self.workers = [
+            ProcessingWorker(
+                worker_id=index + 1,
+                job_queue=job_queue,
+                config=config,
+                working_folder=working_folder,
+                completed_folder=completed_folder,
+                whisper_model=whisper_model,
+            )
+            for index in range(worker_count)
+        ]
+
+    def start(self):
+        for worker in self.workers:
+            worker.start()
+
+    def stop(self):
+        for worker in self.workers:
+            worker.stop()
+
+    def join(self):
+        for worker in self.workers:
+            worker.join()
 
 # Properly format the API response to Markdown
 def format_markdown(api_response):
@@ -318,71 +537,27 @@ def prepend_markdown_prompt(pdf_text, prompt_path):
 
 # Event handler for newly created files
 class FileHandler(FileSystemEventHandler):
-    def __init__(self, config, working_folder, completed_folder, transcriber):
-        self.config = config
-        self.working_folder = working_folder
-        self.completed_folder = completed_folder
-        self.transcriber = transcriber
+    def __init__(self, job_queue, path_to_watch):
+        self.job_queue = job_queue
+        self.path_to_watch = path_to_watch
 
     def on_created(self, event):
         try:
-            # Move the file to the working folder before processing
-            working_file_path = move_to_working(event.src_path, self.working_folder)
-            
-            if working_file_path.endswith(".pdf"):
-                logging.info(f"Processing PDF: {working_file_path}")
-                text, extracted_text_file = extract_text_from_pdf(working_file_path)
-                full_text = prepend_markdown_prompt(text, "/app/summarize-notes.md")
-                api_response = send_to_api(self.config['api_url'], self.config['bearer_token'], self.config['model'], full_text)
-                output_filename = f"{working_file_path}.summary.md"
-                with open(output_filename, 'w') as f:
-                    f.write(format_markdown(api_response))
-                move_to_completed(working_file_path, [extracted_text_file, output_filename], self.completed_folder)
+            if event.is_directory:
+                return
 
-            elif working_file_path.endswith(".docx"):
-                logging.info(f"Processing Word document: {working_file_path}")
-                text, extracted_text_file = extract_text_from_word(working_file_path)
-                full_text = prepend_markdown_prompt(text, "/app/summarize-notes.md")
-                api_response = send_to_api(self.config['api_url'], self.config['bearer_token'], self.config['model'], full_text)
-                output_filename = f"{working_file_path}.summary.md"
-                with open(output_filename, 'w') as f:
-                    f.write(format_markdown(api_response))
-                move_to_completed(working_file_path, [extracted_text_file, output_filename], self.completed_folder)
+            parent_dir = os.path.dirname(event.src_path)
+            if parent_dir != self.path_to_watch:
+                return
 
-            elif working_file_path.endswith(".txt"):
-                logging.info(f"Processing text file: {working_file_path}")
-                text, extracted_text_file = extract_text_from_txt(working_file_path)
-                full_text = prepend_markdown_prompt(text, "/app/summarize-notes.md")
-                api_response = send_to_api(self.config['api_url'], self.config['bearer_token'], self.config['model'], full_text)
-                output_filename = f"{working_file_path}.summary.md"
-                with open(output_filename, 'w') as f:
-                    f.write(format_markdown(api_response))
-                move_to_completed(working_file_path, [extracted_text_file, output_filename], self.completed_folder)
+            if not event.src_path.endswith(SUPPORTED_EXTENSIONS):
+                logging.info(f"Ignoring unsupported file: {event.src_path}")
+                return
 
-            elif working_file_path.endswith((".mp4", ".avi", ".mov", ".mkv")):
-                logging.info(f"Processing video file: {working_file_path}")
-                mp3_file = extract_audio_from_video(working_file_path)
-                text, extracted_text_file = self.transcriber.transcribe_to_markdown(mp3_file)
-                full_text = prepend_markdown_prompt(text, "/app/summarize-notes.md")
-                api_response = send_to_api(self.config['api_url'], self.config['bearer_token'], self.config['model'], full_text)
-                output_filename = f"{working_file_path}.summary.md"
-                with open(output_filename, 'w') as f:
-                    f.write(format_markdown(api_response))
-                move_to_completed(working_file_path, [mp3_file, extracted_text_file, output_filename], self.completed_folder)
-
-            elif working_file_path.endswith(".mp3"):
-                logging.info(f"Processing MP3 file: {working_file_path}")
-                text, extracted_text_file = self.transcriber.transcribe_to_markdown(working_file_path)
-                full_text = prepend_markdown_prompt(text, "/app/summarize-notes.md")
-                api_response = send_to_api(self.config['api_url'], self.config['bearer_token'], self.config['model'], full_text)
-                output_filename = f"{working_file_path}.summary.md"
-                with open(output_filename, 'w') as f:
-                    f.write(format_markdown(api_response))
-                move_to_completed(working_file_path, [extracted_text_file, output_filename], self.completed_folder)
-
-            logging.info(f"Processing is complete for {working_file_path}")
+            self.job_queue.put(event.src_path)
+            logging.info(f"Queued file for background processing: {event.src_path}")
         except Exception as e:
-            logging.error(f"Error processing {event.src_path}: {e}")
+            logging.error(f"Error queueing {event.src_path}: {e}")
 
         
 
@@ -401,7 +576,8 @@ if __name__ == "__main__":
         # Load configuration
         config = load_config()
         whisper_model = config['whisper_model'] if 'whisper_model' in config and config['whisper_model'] else 'base'
-        transcriber = WhisperXTranscriber(whisper_model)
+        worker_count = get_worker_count(config)
+        logging.info(f"Starting worker pool with {worker_count} worker(s)")
 
         # Set up directory monitoring
         path_to_watch = "/app/incoming"
@@ -412,7 +588,18 @@ if __name__ == "__main__":
         # Ensure the "working" and "completed" folders exist
         working_folder, completed_folder = ensure_folders(path_to_watch)
 
-        event_handler = FileHandler(config, working_folder, completed_folder, transcriber)
+        job_queue = queue.Queue()
+        worker_pool = WorkerPool(
+            worker_count,
+            job_queue,
+            config,
+            working_folder,
+            completed_folder,
+            whisper_model,
+        )
+        worker_pool.start()
+
+        event_handler = FileHandler(job_queue, path_to_watch)
         observer = Observer()
         observer.schedule(event_handler, path=path_to_watch, recursive=False)
         observer.start()
@@ -422,7 +609,9 @@ if __name__ == "__main__":
                 time.sleep(1)
         except KeyboardInterrupt:
             observer.stop()
+            worker_pool.stop()
         observer.join()
+        worker_pool.join()
 
     except Exception as e:
         logging.critical(f"Application failed to start: {e}")

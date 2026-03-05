@@ -18,6 +18,12 @@ EchoNotes is a Python-based application that monitors a folder for new files, ex
 - **Offline Operation**: 
   - All processing (text extraction, transcription, summarization) can be done offline.
   - Pre-downloads WhisperX ASR models and handles everything locally.
+- **Background Worker Pool**:
+  - Files are queued immediately by the watcher and processed by persistent workers.
+  - Each worker keeps its model loaded to avoid per-file startup costs.
+- **Automatic Transcript Formatting**:
+  - Audio and video transcripts can be reformatted into readable Markdown before saving.
+  - Formatting falls back to the raw transcript if the formatter fails.
 - **Logging**: Extensive logging to help track operations and errors.
 
 ## Requirements
@@ -115,11 +121,16 @@ api_url: "http://localhost:5000/api/summarize"
 bearer_token: "your_api_token_here"
 model: "base"
 whisper_model: "base" # Specify the WhisperX ASR model to use ('tiny', 'base', 'small', 'medium', 'large')
+worker_count: 2 # Number of background workers to run concurrently; on GPU start with 1
+format_transcripts: true # Format audio/video transcripts into readable Markdown before summarization
+transcript_format_prompt_path: "/app/format-transcript.md" # Optional; built-in prompt is used if missing
 ```
 
 ### Markdown Prompt Customization
 
 The prompt file (`summarize-notes.md`) is used to prepend any instructions for summarization. Update it as you see fit.
+
+If you want to customize transcript formatting, you can optionally mount a separate prompt file and point `transcript_format_prompt_path` at it. If no file exists there, EchoNotes uses a built-in transcript-formatting prompt.
 
 ## Logging
 
