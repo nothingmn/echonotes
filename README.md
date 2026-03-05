@@ -5,13 +5,14 @@ EchoNotes is a Python-based application that monitors a folder for new files, ex
 
 ## Features
 
-- **Monitors a directory** for new files (PDF, DOCX, TXT, MP4, MP3 formats).
+- **Monitors a directory** for new files (PDF, DOCX, TXT, common audio formats, and video formats).
 - **Text Extraction**:
   - PDF files (via PyPDF2 and Tesseract for OCR)
   - Word documents (via python-docx)
   - Plain text files
-  - Audio files (via WhisperX for speech-to-text)
-  - Video files (audio extracted via FFmpeg and transcribed using WhisperX)
+  - Audio files such as MP3, WAV, M4A, AAC, FLAC, OGG, OPUS, WMA, AIFF, MP2, AMR, and AC3
+  - Video files such as MP4, AVI, MOV, MKV, WEBM, and M4V
+  - Non-MP3 audio is normalized to MP3 via FFmpeg before transcription
 - **Summarization**: 
   - Supports explicit LLM providers instead of assuming Ollama-style APIs.
   - Supported providers: Open WebUI, Ollama, OpenAI, Claude/Anthropic, OpenRouter, and a legacy generic generate endpoint.
@@ -115,8 +116,8 @@ EchoNotes monitors the `/app/incoming` directory for new files. When it detects 
 - **PDF**: Extracts text using PyPDF2 or OCR via Tesseract if needed.
 - **Word Documents (DOCX)**: Extracts text using `python-docx`.
 - **Text Files (TXT)**: Reads the plain text.
-- **Audio Files (MP3)**: Transcribes speech to text using WhisperX.
-- **Video Files (MP4)**: Extracts audio using FFmpeg, then transcribes it with WhisperX.
+- **Audio Files**: Common audio inputs are converted to MP3 with FFmpeg when needed, then transcribed with WhisperX.
+- **Video Files**: Extracts audio using FFmpeg, then transcribes it with WhisperX.
 
 Once the text is extracted, it can be summarized by sending the text and a customizable markdown prompt to a configured LLM provider. If no LLM provider is configured, EchoNotes will still extract and transcribe files, but it will skip LLM-based formatting and summarization.
 
@@ -154,7 +155,7 @@ The prompt file (`summarize-notes.md`) is used to prepend any instructions for s
 
 If you want to customize transcript formatting, you can optionally mount a separate prompt file and point `transcript_format_prompt_path` at it. If no file exists there, EchoNotes uses a built-in transcript-formatting prompt.
 
-If you mount an Obsidian vault folder at `vault_path`, EchoNotes also copies audio-ready artifacts there for MP3 and video jobs:
+If you mount an Obsidian vault folder at `vault_path`, EchoNotes also copies audio-ready artifacts there for audio and video jobs:
 - The final MP3
 - The full transcript markdown
 - The summary markdown

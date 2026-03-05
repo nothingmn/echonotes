@@ -17,7 +17,27 @@ import ffmpeg
 import whisperx
 
 
-SUPPORTED_EXTENSIONS = (".pdf", ".docx", ".txt", ".mp3", ".mp4", ".avi", ".mov", ".mkv")
+DOCUMENT_EXTENSIONS = (".pdf", ".docx", ".txt")
+AUDIO_EXTENSIONS = (
+    ".mp3",
+    ".wav",
+    ".m4a",
+    ".aac",
+    ".flac",
+    ".ogg",
+    ".opus",
+    ".wma",
+    ".aiff",
+    ".aif",
+    ".mpga",
+    ".mp2",
+    ".m4b",
+    ".mka",
+    ".amr",
+    ".ac3",
+)
+VIDEO_EXTENSIONS = (".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v")
+SUPPORTED_EXTENSIONS = DOCUMENT_EXTENSIONS + AUDIO_EXTENSIONS + VIDEO_EXTENSIONS
 TEMP_FILE_SUFFIXES = (".part", ".tmp", ".crdownload")
 DEFAULT_SUMMARY_PROMPT_PATH = "/app/summarize-notes.md"
 DEFAULT_VAULT_PATH = "/app/vault"
@@ -125,6 +145,22 @@ def get_chunking_settings(config):
         "target_chunk_chars": int(chunking.get("target_chunk_chars", DEFAULT_CHUNK_TARGET_CHARS)),
         "overlap_chars": int(chunking.get("overlap_chars", DEFAULT_CHUNK_OVERLAP_CHARS)),
     }
+
+
+def get_file_extension(file_path):
+    return os.path.splitext(file_path)[1].lower()
+
+
+def is_audio_file(file_path):
+    return get_file_extension(file_path) in AUDIO_EXTENSIONS
+
+
+def is_video_file(file_path):
+    return get_file_extension(file_path) in VIDEO_EXTENSIONS
+
+
+def is_supported_file(file_path):
+    return get_file_extension(file_path) in SUPPORTED_EXTENSIONS
 
 
 def join_text_content(content):
@@ -541,6 +577,23 @@ def extract_text_from_word(docx_path):
         raise
 
 
+# Convert audio input to MP3 so the downstream transcription and vault output stay consistent.
+def convert_audio_to_mp3(audio_path):
+    try:
+        if get_file_extension(audio_path) == ".mp3":
+            return audio_path
+
+        logging.info(f"Converting audio to MP3: {audio_path}")
+        base_filename = os.path.splitext(os.path.basename(audio_path))[0]
+        mp3_output = os.path.join(os.path.dirname(audio_path), f"{base_filename}.mp3")
+        ffmpeg.input(audio_path).output(mp3_output, acodec="libmp3lame").run(overwrite_output=True)
+        logging.info(f"Audio converted and saved to {mp3_output}")
+        return mp3_output
+    except Exception as e:
+        logging.error(f"Error converting audio file {audio_path} to MP3: {e}")
+        raise
+
+
 # Extract audio from video and save as MP3
 def extract_audio_from_video(video_path):
     try:
@@ -548,8 +601,7 @@ def extract_audio_from_video(video_path):
         base_filename = os.path.splitext(os.path.basename(video_path))[0]
         mp3_output = os.path.join(os.path.dirname(video_path), f"{base_filename}.mp3")
 
-        # Use ffmpeg to extract the audio and save it as an MP3 file
-        ffmpeg.input(video_path).output(mp3_output).run(overwrite_output=True)
+        ffmpeg.input(video_path).output(mp3_output, acodec="libmp3lame", vn=None).run(overwrite_output=True)
         logging.info(f"Audio extracted and saved to {mp3_output}")
         return mp3_output
     except Exception as e:
@@ -665,26 +717,27 @@ class FileProcessor:
     def process(self, source_path):
         wait_for_file_stable(source_path)
         working_file_path = move_to_working(source_path, self.working_folder)
+        file_extension = get_file_extension(working_file_path)
         output_files = []
         vault_files = []
 
         try:
-            if working_file_path.endswith(".pdf"):
+            if file_extension == ".pdf":
                 logging.info(f"Processing PDF: {working_file_path}")
                 text, extracted_text_file = extract_text_from_pdf(working_file_path)
                 output_files.append(extracted_text_file)
 
-            elif working_file_path.endswith(".docx"):
+            elif file_extension == ".docx":
                 logging.info(f"Processing Word document: {working_file_path}")
                 text, extracted_text_file = extract_text_from_word(working_file_path)
                 output_files.append(extracted_text_file)
 
-            elif working_file_path.endswith(".txt"):
+            elif file_extension == ".txt":
                 logging.info(f"Processing text file: {working_file_path}")
                 text, extracted_text_file = extract_text_from_txt(working_file_path)
                 output_files.append(extracted_text_file)
 
-            elif working_file_path.endswith((".mp4", ".avi", ".mov", ".mkv")):
+            elif file_extension in VIDEO_EXTENSIONS:
                 logging.info(f"Processing video file: {working_file_path}")
                 mp3_file = extract_audio_from_video(working_file_path)
                 output_files.append(mp3_file)
@@ -693,12 +746,18 @@ class FileProcessor:
                 output_files.append(extracted_text_file)
                 vault_files.append(mp3_file)
 
-            elif working_file_path.endswith(".mp3"):
-                logging.info(f"Processing MP3 file: {working_file_path}")
-                transcription = self.transcriber.transcribe(working_file_path)
-                text, transcript_body, extracted_text_file = self.format_and_write_transcript(working_file_path, transcription)
+            elif file_extension in AUDIO_EXTENSIONS:
+                audio_path = convert_audio_to_mp3(working_file_path)
+                if audio_path != working_file_path:
+                    logging.info(f"Processing audio file via FFmpeg normalization: {working_file_path}")
+                    output_files.append(audio_path)
+                else:
+                    logging.info(f"Processing MP3 file: {working_file_path}")
+
+                transcription = self.transcriber.transcribe(audio_path)
+                text, transcript_body, extracted_text_file = self.format_and_write_transcript(audio_path, transcription)
                 output_files.append(extracted_text_file)
-                vault_files.append(working_file_path)
+                vault_files.append(audio_path)
 
             else:
                 logging.warning(f"Skipping unsupported file type: {working_file_path}")
@@ -983,11 +1042,13 @@ class FileHandler(FileSystemEventHandler):
             if parent_dir != self.path_to_watch:
                 return
 
-            if event.src_path.endswith(TEMP_FILE_SUFFIXES):
+            normalized_path = event.src_path.lower()
+
+            if normalized_path.endswith(TEMP_FILE_SUFFIXES):
                 logging.info(f"Ignoring temporary file: {event.src_path}")
                 return
 
-            if not event.src_path.endswith(SUPPORTED_EXTENSIONS):
+            if not is_supported_file(event.src_path):
                 logging.info(f"Ignoring unsupported file: {event.src_path}")
                 return
 
