@@ -18,6 +18,7 @@ import whisperx
 
 
 SUPPORTED_EXTENSIONS = (".pdf", ".docx", ".txt", ".mp3", ".mp4", ".avi", ".mov", ".mkv")
+TEMP_FILE_SUFFIXES = (".part", ".tmp", ".crdownload")
 DEFAULT_TRANSCRIPT_FORMAT_PROMPT = """Rewrite the following raw transcript as clean, readable Markdown.
 
 ## Goals
@@ -188,8 +189,12 @@ def move_to_working(file_path, working_folder):
         raise
 
 
-def wait_for_file_ready(file_path, timeout=300, check_interval=1):
+def wait_for_file_stable(file_path, checks=3, delay=2, timeout=300):
+    """
+    Wait until file size stops changing to ensure it finished copying.
+    """
     deadline = time.time() + timeout
+    stable_checks = 0
     last_size = None
 
     while time.time() < deadline:
@@ -197,11 +202,15 @@ def wait_for_file_ready(file_path, timeout=300, check_interval=1):
             raise FileNotFoundError(f"File {file_path} no longer exists")
 
         current_size = os.path.getsize(file_path)
-        if last_size is not None and current_size == last_size:
-            return
+        if current_size == last_size:
+            stable_checks += 1
+            if stable_checks >= checks:
+                return
+        else:
+            stable_checks = 0
+            last_size = current_size
 
-        last_size = current_size
-        time.sleep(check_interval)
+        time.sleep(delay)
 
     raise TimeoutError(f"Timed out waiting for {file_path} to finish writing")
 
@@ -352,7 +361,7 @@ class FileProcessor:
         self.transcriber = transcriber
 
     def process(self, source_path):
-        wait_for_file_ready(source_path)
+        wait_for_file_stable(source_path)
         working_file_path = move_to_working(source_path, self.working_folder)
         output_files = []
 
@@ -548,6 +557,10 @@ class FileHandler(FileSystemEventHandler):
 
             parent_dir = os.path.dirname(event.src_path)
             if parent_dir != self.path_to_watch:
+                return
+
+            if event.src_path.endswith(TEMP_FILE_SUFFIXES):
+                logging.info(f"Ignoring temporary file: {event.src_path}")
                 return
 
             if not event.src_path.endswith(SUPPORTED_EXTENSIONS):
