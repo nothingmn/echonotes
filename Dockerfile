@@ -36,4 +36,7 @@ VOLUME /app/summarize-notes.md
 # Expose the config file as a volume
 VOLUME /app/config.yml
 
+# Expose the Obsidian vault export folder as a volume
+VOLUME /app/vault
+
 CMD ["python", "/app/main.py"]

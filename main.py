@@ -19,6 +19,13 @@ import whisperx
 
 SUPPORTED_EXTENSIONS = (".pdf", ".docx", ".txt", ".mp3", ".mp4", ".avi", ".mov", ".mkv")
 TEMP_FILE_SUFFIXES = (".part", ".tmp", ".crdownload")
+DEFAULT_SUMMARY_PROMPT_PATH = "/app/summarize-notes.md"
+DEFAULT_VAULT_PATH = "/app/vault"
+DEFAULT_OBSIDIAN_TEMPLATE_NAME = "obsidian-template.md"
+DEFAULT_LLM_TIMEOUT_SECONDS = 120
+DEFAULT_CHUNK_MAX_INPUT_CHARS = 24000
+DEFAULT_CHUNK_TARGET_CHARS = 16000
+DEFAULT_CHUNK_OVERLAP_CHARS = 400
 DEFAULT_TRANSCRIPT_FORMAT_PROMPT = """Rewrite the following raw transcript as clean, readable Markdown.
 
 ## Goals
@@ -33,6 +40,31 @@ DEFAULT_TRANSCRIPT_FORMAT_PROMPT = """Rewrite the following raw transcript as cl
 - Do not summarize or omit content.
 - Do not add commentary, warnings, or analysis.
 - Do not invent speaker names.
+"""
+DEFAULT_OBSIDIAN_TEMPLATE = """---
+type: audio-note
+created: {{created}}
+source: EchoNotes
+---
+
+# {{title}}
+
+## Audio
+
+![[{{audio_filename}}]]
+
+## Files
+
+- Transcript: [[{{transcript_filename}}]]
+{{summary_file_line}}
+
+## Summary
+
+{{summary_content}}
+
+## Transcript
+
+{{transcript_body}}
 """
 
 
@@ -69,51 +101,193 @@ def get_worker_count(config):
     return max(1, min(4, os.cpu_count() or 1))
 
 
-# Send extracted text to local API for summarization
-def send_to_api(api_url, bearer_token, model, content):
-    try:
+def get_llm_settings(config):
+    llm_settings = config.get("llm")
+    if isinstance(llm_settings, dict):
+        return llm_settings
+
+    if config.get("api_url") or config.get("model"):
+        return {
+            "provider": "legacy_generate",
+            "api_url": config.get("api_url"),
+            "api_key": config.get("bearer_token"),
+            "model": config.get("model"),
+        }
+
+    return {}
+
+
+def get_chunking_settings(config):
+    chunking = config.get("chunking", {})
+    return {
+        "enabled": chunking.get("enabled", True),
+        "max_input_chars": int(chunking.get("max_input_chars", DEFAULT_CHUNK_MAX_INPUT_CHARS)),
+        "target_chunk_chars": int(chunking.get("target_chunk_chars", DEFAULT_CHUNK_TARGET_CHARS)),
+        "overlap_chars": int(chunking.get("overlap_chars", DEFAULT_CHUNK_OVERLAP_CHARS)),
+    }
+
+
+def join_text_content(content):
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        text_parts = []
+        for item in content:
+            if isinstance(item, str):
+                text_parts.append(item)
+            elif isinstance(item, dict):
+                if isinstance(item.get("text"), str):
+                    text_parts.append(item["text"])
+                elif isinstance(item.get("content"), str):
+                    text_parts.append(item["content"])
+        return "".join(text_parts)
+    return ""
+
+
+class BaseLLMClient:
+    def __init__(self, settings):
+        self.settings = settings
+        self.provider = settings.get("provider")
+        self.model = settings.get("model")
+        self.timeout_seconds = float(settings.get("timeout_seconds", DEFAULT_LLM_TIMEOUT_SECONDS))
+        self.temperature = settings.get("temperature")
+        self.max_tokens = settings.get("max_tokens")
+
+    def generate(self, prompt):
+        raise NotImplementedError
+
+    def _post_json(self, url, headers, payload):
+        response = requests.post(url, json=payload, headers=headers, timeout=self.timeout_seconds)
+        response.raise_for_status()
+        return response.json()
+
+
+class LegacyGenerateClient(BaseLLMClient):
+    def generate(self, prompt):
+        headers = {"Content-Type": "application/json"}
+        api_key = self.settings.get("api_key")
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        payload = {
+            "model": self.model,
+            "prompt": prompt,
+            "stream": False,
+        }
+
+        response = self._post_json(self.settings["api_url"], headers, payload)
+        return response.get("response", "")
+
+
+class OllamaClient(BaseLLMClient):
+    def generate(self, prompt):
+        base_url = self.settings.get("base_url", "http://localhost:11434/api").rstrip("/")
+        headers = {"Content-Type": "application/json"}
+        api_key = self.settings.get("api_key")
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        payload = {
+            "model": self.model,
+            "prompt": prompt,
+            "stream": False,
+        }
+
+        response = self._post_json(f"{base_url}/generate", headers, payload)
+        return response.get("response", "")
+
+
+class OpenAICompatibleClient(BaseLLMClient):
+    def __init__(self, settings, base_url, path, extra_headers=None):
+        super().__init__(settings)
+        self.base_url = base_url.rstrip("/")
+        self.path = path
+        self.extra_headers = extra_headers or {}
+
+    def generate(self, prompt):
         headers = {
-            "Authorization": f"Bearer {bearer_token}",
             "Content-Type": "application/json",
+            **self.extra_headers,
+        }
+        api_key = self.settings.get("api_key")
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": False,
+        }
+        if self.temperature is not None:
+            payload["temperature"] = self.temperature
+        if self.max_tokens is not None:
+            payload["max_tokens"] = self.max_tokens
+
+        response = self._post_json(f"{self.base_url}{self.path}", headers, payload)
+        message = response.get("choices", [{}])[0].get("message", {})
+        return join_text_content(message.get("content", ""))
+
+
+class AnthropicClient(BaseLLMClient):
+    def generate(self, prompt):
+        base_url = self.settings.get("base_url", "https://api.anthropic.com").rstrip("/")
+        headers = {
+            "Content-Type": "application/json",
+            "x-api-key": self.settings.get("api_key", ""),
+            "anthropic-version": self.settings.get("anthropic_version", "2023-06-01"),
         }
         payload = {
-            "model": model,
-            "prompt": content,
-            "stream": False
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": int(self.max_tokens or 2048),
         }
+        if self.temperature is not None:
+            payload["temperature"] = self.temperature
 
-        # Log the details of the request
-        logging.info(f"Sending request to API: {api_url}")
-        logging.info(f"Request headers: {headers}")
-        logging.info(f"Request payload: {payload}")
+        response = self._post_json(f"{base_url}/v1/messages", headers, payload)
+        return join_text_content(response.get("content", []))
 
-        # Make the POST request
-        response = requests.post(api_url, json=payload, headers=headers)
 
-        # Ensure the status code is successful; raises error for 4xx or 5xx
-        response.raise_for_status()
+def build_llm_client(config):
+    settings = get_llm_settings(config)
+    provider = (settings.get("provider") or "").strip().lower()
 
-        # Attempt to parse the response as JSON
-        try:
-            parsed_response = response.json()  # Should return a dict
-            logging.info(f"Parsed Response content: {parsed_response}")
-            return parsed_response.get('response', 'No text found in response')
-        except ValueError:
-            logging.error(f"Failed to parse response as JSON: {response.text}")
-            return 'No valid JSON response'
+    if not provider:
+        logging.info("No LLM provider configured; LLM-based formatting and summarization will be skipped.")
+        return None
 
-    except requests.exceptions.HTTPError as http_err:
-        logging.error(f"HTTP error occurred: {http_err}")
-        raise
-    except requests.exceptions.ConnectionError:
-        logging.error("Failed to connect to the API. Please ensure the API server is running and accessible.")
-        raise
-    except requests.exceptions.Timeout:
-        logging.error("Request to the API timed out. Consider increasing the timeout duration.")
-        raise
-    except Exception as e:
-        logging.error(f"An error occurred while sending a request to the API: {e}")
-        raise
+    if not settings.get("model") and provider != "legacy_generate":
+        raise ValueError(f"LLM provider '{provider}' requires a model to be configured")
+
+    if provider == "legacy_generate":
+        if not settings.get("api_url"):
+            raise ValueError("legacy_generate provider requires api_url")
+        return LegacyGenerateClient(settings)
+
+    if provider == "ollama":
+        return OllamaClient(settings)
+
+    if provider == "openai":
+        base_url = settings.get("base_url", "https://api.openai.com/v1")
+        return OpenAICompatibleClient(settings, base_url, "/chat/completions")
+
+    if provider == "openrouter":
+        base_url = settings.get("base_url", "https://openrouter.ai/api/v1")
+        extra_headers = {}
+        if settings.get("site_url"):
+            extra_headers["HTTP-Referer"] = settings["site_url"]
+        if settings.get("site_name"):
+            extra_headers["X-Title"] = settings["site_name"]
+        return OpenAICompatibleClient(settings, base_url, "/chat/completions", extra_headers)
+
+    if provider == "openwebui":
+        base_url = settings.get("base_url", "http://localhost:3000/api")
+        return OpenAICompatibleClient(settings, base_url, "/chat/completions")
+
+    if provider in ("claude", "anthropic"):
+        return AnthropicClient(settings)
+
+    raise ValueError(f"Unsupported LLM provider: {provider}")
 
 
 def load_prompt(prompt_path, default_content):
@@ -121,6 +295,96 @@ def load_prompt(prompt_path, default_content):
         with open(prompt_path, 'r') as prompt_file:
             return prompt_file.read()
     return default_content
+
+
+def get_summary_prompt_path(config):
+    return config.get("summary_prompt_path", DEFAULT_SUMMARY_PROMPT_PATH)
+
+
+def get_obsidian_template_path(config):
+    configured_path = config.get("obsidian_template_path")
+    if configured_path:
+        return configured_path
+    return os.path.join(
+        os.path.dirname(get_summary_prompt_path(config)),
+        DEFAULT_OBSIDIAN_TEMPLATE_NAME,
+    )
+
+
+def get_vault_path(config):
+    return config.get("vault_path", DEFAULT_VAULT_PATH)
+
+
+def render_template(template, context):
+    rendered = template
+    for key, value in context.items():
+        rendered = rendered.replace(f"{{{{{key}}}}}", value)
+    return rendered
+
+
+def format_timestamp_link(seconds):
+    total_seconds = max(0, int(seconds))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        display = f"{hours:02d}:{minutes:02d}:{secs:02d}"
+    else:
+        display = f"{minutes:02d}:{secs:02d}"
+    return total_seconds, display
+
+
+def build_linked_transcript(audio_filename, segments):
+    lines = []
+    for segment in segments:
+        text = segment.get("text", "").strip()
+        if not text:
+            continue
+
+        start_seconds, display_time = format_timestamp_link(segment.get("start", 0))
+        speaker = segment.get("speaker")
+        speaker_prefix = f"{speaker}: " if speaker else ""
+        lines.append(
+            f"[[{audio_filename}#t={start_seconds}|{display_time}]] {speaker_prefix}{text}"
+        )
+
+    return "\n".join(lines).strip()
+
+
+def split_text_into_chunks(text, target_chars, overlap_chars):
+    if len(text) <= target_chars:
+        return [text]
+
+    chunks = []
+    start = 0
+    text_length = len(text)
+
+    while start < text_length:
+        end = min(start + target_chars, text_length)
+        if end < text_length:
+            split_at = text.rfind("\n\n", start, end)
+            if split_at <= start:
+                split_at = text.rfind("\n", start, end)
+            if split_at <= start:
+                split_at = text.rfind(" ", start, end)
+            if split_at <= start:
+                split_at = end
+        else:
+            split_at = end
+
+        chunk = text[start:split_at].strip()
+        if chunk:
+            chunks.append(chunk)
+
+        if split_at >= text_length:
+            break
+
+        start = max(split_at - overlap_chars, start + 1)
+
+    return chunks
+
+
+def build_prompt(prompt_instructions, input_text, heading="INPUT"):
+    return f"{prompt_instructions}\n\n# {heading}:\n\n{input_text}"
 
 # Helper function to extract text from PDF using OCR and write it back to the same folder
 def extract_text_from_pdf(pdf_path):
@@ -175,6 +439,13 @@ def ensure_folders(path_to_watch):
             os.makedirs(folder)
             logging.info(f"Created folder at: {folder}")
     return working_folder, completed_folder
+
+
+def ensure_folder(folder_path):
+    if not os.path.exists(folder_path):
+        os.makedirs(folder_path)
+        logging.info(f"Created folder at: {folder_path}")
+    return folder_path
 
 
 # Move files to the "working" folder
@@ -233,6 +504,23 @@ def move_to_completed(file_path, output_files, completed_folder):
     except Exception as e:
         logging.error(f"Error moving files to completed folder: {e}")
         raise
+
+
+def copy_files_to_folder(file_paths, destination_folder):
+    copied_paths = []
+    for file_path in file_paths:
+        if not file_path or not os.path.exists(file_path):
+            continue
+        destination_path = os.path.join(destination_folder, os.path.basename(file_path))
+        shutil.copy2(file_path, destination_path)
+        copied_paths.append(destination_path)
+        logging.info(f"Copied {file_path} to {destination_path}")
+    return copied_paths
+
+
+def build_output_path(source_path, suffix):
+    base_filename = os.path.splitext(os.path.basename(source_path))[0]
+    return os.path.join(os.path.dirname(source_path), f"{base_filename}{suffix}")
 
 # Extract text from a Word document (.docx)
 def extract_text_from_word(docx_path):
@@ -338,32 +626,47 @@ class WhisperXTranscriber:
                         f"WhisperX alignment failed for {audio_path}; using unaligned transcript: {align_error}"
                     )
 
-            transcript = "\n".join(
-                segment["text"].strip()
+            normalized_segments = [
+                {
+                    "start": segment.get("start", 0),
+                    "end": segment.get("end"),
+                    "text": segment.get("text", "").strip(),
+                    "speaker": segment.get("speaker"),
+                }
                 for segment in segments
                 if segment.get("text") and segment["text"].strip()
-            ).strip()
+            ]
+
+            transcript = "\n".join(segment["text"] for segment in normalized_segments).strip()
 
             if not transcript:
                 transcript = result.get("text", "").strip()
 
-            return transcript
+            return {
+                "text": transcript,
+                "segments": normalized_segments,
+                "language": result.get("language"),
+            }
         except Exception as e:
             logging.error(f"Error transcribing audio from {audio_path}: {e}")
             raise
 
 
 class FileProcessor:
-    def __init__(self, config, working_folder, completed_folder, transcriber):
+    def __init__(self, config, working_folder, completed_folder, vault_folder, transcriber, llm_client):
         self.config = config
         self.working_folder = working_folder
         self.completed_folder = completed_folder
+        self.vault_folder = vault_folder
         self.transcriber = transcriber
+        self.llm_client = llm_client
+        self.chunking = get_chunking_settings(config)
 
     def process(self, source_path):
         wait_for_file_stable(source_path)
         working_file_path = move_to_working(source_path, self.working_folder)
         output_files = []
+        vault_files = []
 
         try:
             if working_file_path.endswith(".pdf"):
@@ -385,31 +688,43 @@ class FileProcessor:
                 logging.info(f"Processing video file: {working_file_path}")
                 mp3_file = extract_audio_from_video(working_file_path)
                 output_files.append(mp3_file)
-                text = self.transcriber.transcribe(mp3_file)
-                text, extracted_text_file = self.format_and_write_transcript(mp3_file, text)
+                transcription = self.transcriber.transcribe(mp3_file)
+                text, transcript_body, extracted_text_file = self.format_and_write_transcript(mp3_file, transcription)
                 output_files.append(extracted_text_file)
+                vault_files.append(mp3_file)
 
             elif working_file_path.endswith(".mp3"):
                 logging.info(f"Processing MP3 file: {working_file_path}")
-                text = self.transcriber.transcribe(working_file_path)
-                text, extracted_text_file = self.format_and_write_transcript(working_file_path, text)
+                transcription = self.transcriber.transcribe(working_file_path)
+                text, transcript_body, extracted_text_file = self.format_and_write_transcript(working_file_path, transcription)
                 output_files.append(extracted_text_file)
+                vault_files.append(working_file_path)
 
             else:
                 logging.warning(f"Skipping unsupported file type: {working_file_path}")
                 return
 
-            full_text = prepend_markdown_prompt(text, "/app/summarize-notes.md")
-            api_response = send_to_api(
-                self.config['api_url'],
-                self.config['bearer_token'],
-                self.config['model'],
-                full_text,
-            )
-            output_filename = f"{working_file_path}.summary.md"
-            with open(output_filename, 'w') as f:
-                f.write(format_markdown(api_response))
-            output_files.append(output_filename)
+            output_filename = None
+            if self.llm_client:
+                summary_content = self.generate_summary(text)
+                output_filename = build_output_path(working_file_path, "_summary.md")
+                with open(output_filename, 'w') as f:
+                    f.write(summary_content)
+                output_files.append(output_filename)
+            else:
+                logging.info(f"No LLM provider configured; skipping summary for {working_file_path}")
+
+            if vault_files:
+                obsidian_file = self.write_obsidian_note(
+                    audio_path=vault_files[0],
+                    transcript_path=extracted_text_file,
+                    transcript_content=text,
+                    transcript_body=transcript_body,
+                    summary_path=output_filename,
+                )
+                output_files.append(obsidian_file)
+                vault_files.extend([extracted_text_file, output_filename, obsidian_file])
+                copy_files_to_folder(vault_files, self.vault_folder)
 
             move_to_completed(working_file_path, output_files, self.completed_folder)
             logging.info(f"Processing is complete for {working_file_path}")
@@ -417,22 +732,17 @@ class FileProcessor:
             logging.exception(f"Error processing {working_file_path}")
             raise
 
-    def format_and_write_transcript(self, audio_path, transcript):
-        formatted_transcript = transcript
+    def format_and_write_transcript(self, audio_path, transcription):
+        plain_transcript = transcription["text"]
+        formatted_transcript = plain_transcript
+        linked_transcript = ""
 
-        if self.config.get("format_transcripts", True):
+        if self.llm_client and self.config.get("format_transcripts", True):
             try:
                 logging.info(f"Formatting transcript for {audio_path}")
                 prompt_path = self.config.get("transcript_format_prompt_path", "/app/format-transcript.md")
                 prompt_content = load_prompt(prompt_path, DEFAULT_TRANSCRIPT_FORMAT_PROMPT)
-                formatting_prompt = f"{prompt_content}\n\n# INPUT:\n\n{transcript}"
-                api_response = send_to_api(
-                    self.config['api_url'],
-                    self.config['bearer_token'],
-                    self.config['model'],
-                    formatting_prompt,
-                )
-                candidate = format_markdown(api_response).strip()
+                candidate = self.generate_formatted_transcript(prompt_content, plain_transcript).strip()
                 if candidate:
                     formatted_transcript = candidate
                 else:
@@ -440,26 +750,149 @@ class FileProcessor:
             except Exception as format_error:
                 logging.warning(f"Transcript formatting failed for {audio_path}; using raw transcript: {format_error}")
 
-        if not formatted_transcript.startswith("#"):
-            formatted_transcript = f"# Transcript\n\n{formatted_transcript}"
+        if transcription.get("segments"):
+            linked_transcript = build_linked_transcript(
+                os.path.basename(audio_path),
+                transcription["segments"],
+            )
 
-        base_filename = os.path.splitext(os.path.basename(audio_path))[0]
-        output_filename = os.path.join(os.path.dirname(audio_path), f"{base_filename}_transcribed.md")
+        transcript_file_content = linked_transcript or formatted_transcript
+        if not transcript_file_content.startswith("#"):
+            transcript_file_content = f"# Transcript\n\n{transcript_file_content}"
+
+        output_filename = build_output_path(audio_path, "_transcribed.md")
         with open(output_filename, 'w') as output_file:
-            output_file.write(formatted_transcript)
+            output_file.write(transcript_file_content)
 
         logging.info(f"Transcribed text saved to {output_filename}")
-        return formatted_transcript, output_filename
+        return formatted_transcript, linked_transcript or formatted_transcript, output_filename
+
+    def generate_formatted_transcript(self, prompt_content, transcript_text):
+        if not self.chunking["enabled"] or len(transcript_text) <= self.chunking["max_input_chars"]:
+            return self.llm_client.generate(build_prompt(prompt_content, transcript_text))
+
+        chunks = split_text_into_chunks(
+            transcript_text,
+            self.chunking["target_chunk_chars"],
+            self.chunking["overlap_chars"],
+        )
+        formatted_chunks = []
+        total_chunks = len(chunks)
+
+        for index, chunk in enumerate(chunks, start=1):
+            chunk_prompt = (
+                f"{prompt_content}\n\n"
+                f"# CHUNK INFO:\nThis is transcript chunk {index} of {total_chunks}. "
+                "Format this chunk only and do not add summaries.\n\n"
+                f"# INPUT:\n\n{chunk}"
+            )
+            formatted_chunks.append(self.llm_client.generate(chunk_prompt).strip())
+
+        return "\n\n".join(chunk for chunk in formatted_chunks if chunk)
+
+    def generate_summary(self, text):
+        prompt_content = load_prompt(get_summary_prompt_path(self.config), "")
+        if not prompt_content.strip():
+            raise ValueError("Summary prompt is empty")
+
+        if not self.chunking["enabled"] or len(text) <= self.chunking["max_input_chars"]:
+            return format_markdown(self.llm_client.generate(build_prompt(prompt_content, text))).strip()
+
+        partial_summaries = self.generate_chunk_summaries(prompt_content, text)
+        return self.reduce_partial_summaries(prompt_content, partial_summaries)
+
+    def generate_chunk_summaries(self, prompt_content, text):
+        chunks = split_text_into_chunks(
+            text,
+            self.chunking["target_chunk_chars"],
+            self.chunking["overlap_chars"],
+        )
+        partial_summaries = []
+        total_chunks = len(chunks)
+
+        for index, chunk in enumerate(chunks, start=1):
+            chunk_prompt = (
+                "You are summarizing one chunk of a longer meeting or transcript. "
+                "Only summarize what appears in this chunk. Preserve concrete names, decisions, action items, deadlines, and risks.\n\n"
+                f"{prompt_content}\n\n"
+                f"# CHUNK INFO:\nThis is chunk {index} of {total_chunks}. "
+                "Do not assume facts from other chunks.\n\n"
+                f"# INPUT:\n\n{chunk}"
+            )
+            partial_summary = format_markdown(self.llm_client.generate(chunk_prompt)).strip()
+            if partial_summary:
+                partial_summaries.append(partial_summary)
+
+        return partial_summaries
+
+    def reduce_partial_summaries(self, prompt_content, partial_summaries):
+        if not partial_summaries:
+            return ""
+
+        combined = "\n\n".join(
+            f"## Partial Summary {index}\n\n{summary}"
+            for index, summary in enumerate(partial_summaries, start=1)
+        )
+
+        reducer_prompt = (
+            "Combine the following partial summaries into one final summary. "
+            "Deduplicate repeated points, keep concrete decisions and action items, and preserve Markdown structure.\n\n"
+            f"{prompt_content}\n\n"
+            f"# PARTIAL SUMMARIES:\n\n{combined}"
+        )
+
+        if len(combined) <= self.chunking["max_input_chars"]:
+            return format_markdown(self.llm_client.generate(reducer_prompt)).strip()
+
+        reduced_partials = self.generate_chunk_summaries(
+            "Compress these partial summaries into a smaller set of faithful partial summaries.",
+            combined,
+        )
+        return self.reduce_partial_summaries(prompt_content, reduced_partials)
+
+    def write_obsidian_note(self, audio_path, transcript_path, transcript_content, transcript_body, summary_path):
+        base_filename = os.path.splitext(os.path.basename(audio_path))[0]
+        output_filename = build_output_path(audio_path, ".md")
+        template = load_prompt(
+            get_obsidian_template_path(self.config),
+            DEFAULT_OBSIDIAN_TEMPLATE,
+        )
+
+        summary_content = ""
+        summary_filename = ""
+        if summary_path and os.path.exists(summary_path):
+            with open(summary_path, 'r') as summary_file:
+                summary_content = summary_file.read().strip()
+            summary_filename = os.path.basename(summary_path)
+
+        context = {
+            "created": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "title": base_filename,
+            "audio_filename": os.path.basename(audio_path),
+            "transcript_filename": os.path.basename(transcript_path),
+            "summary_filename": summary_filename,
+            "summary_file_line": f"- Summary: [[{summary_filename}]]" if summary_filename else "- Summary: Not generated",
+            "transcript_content": transcript_content,
+            "transcript_body": transcript_body,
+            "summary_content": summary_content,
+        }
+
+        with open(output_filename, 'w') as output_file:
+            output_file.write(render_template(template, context))
+
+        logging.info(f"Obsidian note saved to {output_filename}")
+        return output_filename
 
 
 class ProcessingWorker(threading.Thread):
-    def __init__(self, worker_id, job_queue, config, working_folder, completed_folder, whisper_model):
+    def __init__(self, worker_id, job_queue, config, working_folder, completed_folder, vault_folder, whisper_model):
         super().__init__(daemon=True, name=f"worker-{worker_id}")
         self.worker_id = worker_id
         self.job_queue = job_queue
         self.config = config
         self.working_folder = working_folder
         self.completed_folder = completed_folder
+        self.vault_folder = vault_folder
         self.whisper_model = whisper_model
         self.stop_event = threading.Event()
         self.processor = None
@@ -471,11 +904,14 @@ class ProcessingWorker(threading.Thread):
     def run(self):
         logging.info(f"Starting processing worker {self.worker_id}")
         transcriber = WhisperXTranscriber(self.whisper_model)
+        llm_client = build_llm_client(self.config)
         self.processor = FileProcessor(
             self.config,
             self.working_folder,
             self.completed_folder,
+            self.vault_folder,
             transcriber,
+            llm_client,
         )
 
         while not self.stop_event.is_set():
@@ -491,7 +927,7 @@ class ProcessingWorker(threading.Thread):
 
 
 class WorkerPool:
-    def __init__(self, worker_count, job_queue, config, working_folder, completed_folder, whisper_model):
+    def __init__(self, worker_count, job_queue, config, working_folder, completed_folder, vault_folder, whisper_model):
         self.workers = [
             ProcessingWorker(
                 worker_id=index + 1,
@@ -499,6 +935,7 @@ class WorkerPool:
                 config=config,
                 working_folder=working_folder,
                 completed_folder=completed_folder,
+                vault_folder=vault_folder,
                 whisper_model=whisper_model,
             )
             for index in range(worker_count)
@@ -531,19 +968,6 @@ def format_markdown(api_response):
         logging.error(f"Error formatting API response to Markdown: {e}")
         return ""
     
-# Prepend the markdown prompt file content
-def prepend_markdown_prompt(pdf_text, prompt_path):
-    try:
-        with open(prompt_path, 'r') as prompt_file:
-            prompt_content = prompt_file.read()
-        return prompt_content + "\n" + pdf_text
-    except FileNotFoundError:
-        logging.error(f"Markdown prompt file not found at {prompt_path}. Please provide a valid prompt file.")
-        raise
-    except Exception as e:
-        logging.error(f"Error reading markdown prompt file {prompt_path}: {e}")
-        raise
-
 # Event handler for newly created files
 class FileHandler(FileSystemEventHandler):
     def __init__(self, job_queue, path_to_watch):
@@ -598,8 +1022,9 @@ if __name__ == "__main__":
             logging.error(f"Directory {path_to_watch} does not exist. Please ensure the folder is mounted.")
             raise FileNotFoundError(f"Directory {path_to_watch} not found")
 
-        # Ensure the "working" and "completed" folders exist
+        # Ensure the output folders exist
         working_folder, completed_folder = ensure_folders(path_to_watch)
+        vault_folder = ensure_folder(get_vault_path(config))
 
         job_queue = queue.Queue()
         worker_pool = WorkerPool(
@@ -608,6 +1033,7 @@ if __name__ == "__main__":
             config,
             working_folder,
             completed_folder,
+            vault_folder,
             whisper_model,
         )
         worker_pool.start()

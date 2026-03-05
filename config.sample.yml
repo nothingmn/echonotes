@@ -1,10 +1,61 @@
-api_url: "http://10.0.0.242:3000/ollama/api/generate"
-bearer_token: "sk-9906764asdfsadfsdfafds5eb46071b8b"
-model: "mistral-small:22b"
+llm:
+  provider: ""  # one of: openwebui, ollama, openai, claude, anthropic, openrouter, legacy_generate
+  model: ""
+  base_url: ""
+  api_key: ""
+  timeout_seconds: 120
+  max_tokens: 2048
+  temperature: 0.2
+  anthropic_version: "2023-06-01"  # only used for claude/anthropic
+  site_url: ""  # optional, used by openrouter
+  site_name: ""  # optional, used by openrouter
+
 whisper_model: "tiny"  # see the Dockerfile; WhisperX ASR models preloaded during build are tiny, base, and small
 worker_count: 2  # number of background processing workers; on GPU, 1 is usually the safe default
 format_transcripts: true  # format audio/video transcripts into readable markdown before saving and summarizing
 transcript_format_prompt_path: "/app/format-transcript.md"  # optional; built-in prompt is used if this file does not exist
+summary_prompt_path: "/app/summarize-notes.md"  # optional; defaults to /app/summarize-notes.md
+vault_path: "/app/vault"  # folder inside your Obsidian vault where audio artifacts and notes are copied
+obsidian_template_path: "/app/obsidian-template.md"  # optional; defaults to a template next to summarize-notes.md or a built-in plain template
+
+chunking:
+  enabled: true
+  max_input_chars: 24000  # if input exceeds this, EchoNotes summarizes it in chunks first
+  target_chunk_chars: 16000
+  overlap_chars: 400
+
+# Provider examples:
+#
+# llm:
+#   provider: "openwebui"
+#   model: "gpt-4o-mini"
+#   base_url: "http://openwebui:3000/api"
+#   api_key: "your_openwebui_token"
+#
+# llm:
+#   provider: "ollama"
+#   model: "llama3.1"
+#   base_url: "http://ollama:11434/api"
+#
+# llm:
+#   provider: "openai"
+#   model: "gpt-4o-mini"
+#   base_url: "https://api.openai.com/v1"
+#   api_key: "sk-..."
+#
+# llm:
+#   provider: "claude"
+#   model: "claude-3-5-sonnet-latest"
+#   base_url: "https://api.anthropic.com"
+#   api_key: "sk-ant-..."
+#
+# llm:
+#   provider: "openrouter"
+#   model: "openai/gpt-4o-mini"
+#   base_url: "https://openrouter.ai/api/v1"
+#   api_key: "sk-or-..."
+#   site_url: "https://example.com"
+#   site_name: "EchoNotes"
 
 
 
