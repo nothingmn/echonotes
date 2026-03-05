@@ -12,7 +12,7 @@ import yaml
 import json
 import shutil
 import ffmpeg
-import whisper
+import whisperx
 
 
 # Setup logging
@@ -211,28 +211,82 @@ def extract_text_from_txt(file_name):
         print(f"Error: An error occurred while reading the file: {e}")
         
 
-# Convert MP3 to text using Whisper
-def convert_audio_to_text(audio_path, whisper_model):
-    try:
-        logging.info(f"Converting audio to text using Whisper: {audio_path}")
-        
-        # Load the Whisper model
-        model = whisper.load_model(whisper_model)
-        
-        # Transcribe the audio file
-        result = model.transcribe(audio_path)
+class WhisperXTranscriber:
+    def __init__(self, whisper_model):
+        import torch
 
-        # Save the transcribed text to a markdown file
-        base_filename = os.path.splitext(os.path.basename(audio_path))[0]
-        output_filename = os.path.join(os.path.dirname(audio_path), f"{base_filename}_transcribed.md")
-        with open(output_filename, 'w') as output_file:
-            output_file.write(f"# Transcribed Audio\n\n{result['text']}")
-        
-        logging.info(f"Transcribed text saved to {output_filename}")
-        return result['text'], output_filename
-    except Exception as e:
-        logging.error(f"Error transcribing audio from {audio_path}: {e}")
-        raise
+        self.whisper_model = whisper_model
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.compute_type = "float16" if self.device == "cuda" else "int8"
+        self.batch_size = 16 if self.device == "cuda" else 4
+        self.align_models = {}
+
+        logging.info(
+            f"Loading WhisperX model at startup "
+            f"(device={self.device}, compute_type={self.compute_type}, model={self.whisper_model})"
+        )
+        self.model = whisperx.load_model(
+            self.whisper_model,
+            self.device,
+            compute_type=self.compute_type,
+        )
+
+    def _get_align_model(self, language_code):
+        if language_code not in self.align_models:
+            logging.info(f"Loading WhisperX alignment model for language: {language_code}")
+            self.align_models[language_code] = whisperx.load_align_model(
+                language_code=language_code,
+                device=self.device,
+            )
+        return self.align_models[language_code]
+
+    def transcribe_to_markdown(self, audio_path):
+        try:
+            logging.info(
+                f"Converting audio to text using WhisperX: {audio_path} "
+                f"(device={self.device}, model={self.whisper_model})"
+            )
+
+            audio = whisperx.load_audio(audio_path)
+            result = self.model.transcribe(audio, batch_size=self.batch_size)
+
+            segments = result.get("segments", [])
+            if segments and result.get("language"):
+                try:
+                    align_model, metadata = self._get_align_model(result["language"])
+                    aligned_result = whisperx.align(
+                        segments,
+                        align_model,
+                        metadata,
+                        audio,
+                        self.device,
+                        return_char_alignments=False,
+                    )
+                    segments = aligned_result.get("segments", segments)
+                except Exception as align_error:
+                    logging.warning(
+                        f"WhisperX alignment failed for {audio_path}; using unaligned transcript: {align_error}"
+                    )
+
+            transcript = "\n".join(
+                segment["text"].strip()
+                for segment in segments
+                if segment.get("text") and segment["text"].strip()
+            ).strip()
+
+            if not transcript:
+                transcript = result.get("text", "").strip()
+
+            base_filename = os.path.splitext(os.path.basename(audio_path))[0]
+            output_filename = os.path.join(os.path.dirname(audio_path), f"{base_filename}_transcribed.md")
+            with open(output_filename, 'w') as output_file:
+                output_file.write(f"# Transcribed Audio\n\n{transcript}")
+
+            logging.info(f"Transcribed text saved to {output_filename}")
+            return transcript, output_filename
+        except Exception as e:
+            logging.error(f"Error transcribing audio from {audio_path}: {e}")
+            raise
 
 # Properly format the API response to Markdown
 def format_markdown(api_response):
@@ -264,17 +318,14 @@ def prepend_markdown_prompt(pdf_text, prompt_path):
 
 # Event handler for newly created files
 class FileHandler(FileSystemEventHandler):
-    def __init__(self, config, working_folder, completed_folder):
+    def __init__(self, config, working_folder, completed_folder, transcriber):
         self.config = config
         self.working_folder = working_folder
         self.completed_folder = completed_folder
+        self.transcriber = transcriber
 
     def on_created(self, event):
         try:
-            # Access 'whisper_model' with a default value of 'base' if the key doesn't exist or is None/empty
-            whisper_model = self.config['whisper_model'] if 'whisper_model' in self.config and self.config['whisper_model'] else 'base'
-
-
             # Move the file to the working folder before processing
             working_file_path = move_to_working(event.src_path, self.working_folder)
             
@@ -311,7 +362,7 @@ class FileHandler(FileSystemEventHandler):
             elif working_file_path.endswith((".mp4", ".avi", ".mov", ".mkv")):
                 logging.info(f"Processing video file: {working_file_path}")
                 mp3_file = extract_audio_from_video(working_file_path)
-                text, extracted_text_file = convert_audio_to_text(mp3_file, whisper_model)
+                text, extracted_text_file = self.transcriber.transcribe_to_markdown(mp3_file)
                 full_text = prepend_markdown_prompt(text, "/app/summarize-notes.md")
                 api_response = send_to_api(self.config['api_url'], self.config['bearer_token'], self.config['model'], full_text)
                 output_filename = f"{working_file_path}.summary.md"
@@ -321,7 +372,7 @@ class FileHandler(FileSystemEventHandler):
 
             elif working_file_path.endswith(".mp3"):
                 logging.info(f"Processing MP3 file: {working_file_path}")
-                text, extracted_text_file = convert_audio_to_text(working_file_path, whisper_model)
+                text, extracted_text_file = self.transcriber.transcribe_to_markdown(working_file_path)
                 full_text = prepend_markdown_prompt(text, "/app/summarize-notes.md")
                 api_response = send_to_api(self.config['api_url'], self.config['bearer_token'], self.config['model'], full_text)
                 output_filename = f"{working_file_path}.summary.md"
@@ -349,6 +400,8 @@ if __name__ == "__main__":
 
         # Load configuration
         config = load_config()
+        whisper_model = config['whisper_model'] if 'whisper_model' in config and config['whisper_model'] else 'base'
+        transcriber = WhisperXTranscriber(whisper_model)
 
         # Set up directory monitoring
         path_to_watch = "/app/incoming"
@@ -359,7 +412,7 @@ if __name__ == "__main__":
         # Ensure the "working" and "completed" folders exist
         working_folder, completed_folder = ensure_folders(path_to_watch)
 
-        event_handler = FileHandler(config, working_folder, completed_folder)
+        event_handler = FileHandler(config, working_folder, completed_folder, transcriber)
         observer = Observer()
         observer.schedule(event_handler, path=path_to_watch, recursive=False)
         observer.start()

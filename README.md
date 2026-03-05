@@ -1,7 +1,7 @@
 
 # EchoNotes
 
-EchoNotes is a Python-based application that monitors a folder for new files, extracts the content (text, audio, video), summarizes it using a local instance of an LLM model (like Whisper and others), and saves the summarized output back to disk. It supports offline operation and can handle multiple file formats, including PDFs, Word documents, text files, video/audio files.
+EchoNotes is a Python-based application that monitors a folder for new files, extracts the content (text, audio, video), summarizes it using a local instance of an LLM model, and saves the summarized output back to disk. It supports offline operation and can handle multiple file formats, including PDFs, Word documents, text files, video/audio files.
 
 ## Features
 
@@ -10,14 +10,14 @@ EchoNotes is a Python-based application that monitors a folder for new files, ex
   - PDF files (via PyPDF2 and Tesseract for OCR)
   - Word documents (via python-docx)
   - Plain text files
-  - Audio files (via Whisper for speech-to-text)
-  - Video files (audio extracted via FFmpeg and transcribed using Whisper)
+  - Audio files (via WhisperX for speech-to-text)
+  - Video files (audio extracted via FFmpeg and transcribed using WhisperX)
 - **Summarization**: 
   - Sends extracted text to a local LLM API for summarization.
   - Supports customizable markdown prompts.
 - **Offline Operation**: 
   - All processing (text extraction, transcription, summarization) can be done offline.
-  - Pre-downloads Whisper models and handles everything locally.
+  - Pre-downloads WhisperX ASR models and handles everything locally.
 - **Logging**: Extensive logging to help track operations and errors.
 
 ## Requirements
@@ -65,11 +65,11 @@ EchoNotes is a Python-based application that monitors a folder for new files, ex
    docker run -v /path/to/incoming:/app/incoming -v /path/to/config.yml:/app/config.yml -v /path/to/summarize-notes.md:/app/summarize-notes.md echonotes
    ```
 
-3. **Pre-Download Whisper Models (Optional)**:
+3. **Pre-Download WhisperX Models (Optional)**:
 
-   The Whisper models are automatically downloaded, but you can pre-download them by running:
+   The WhisperX ASR models are automatically downloaded, but you can pre-download them by running:
    ```bash
-   docker exec -it <container_id> python -c "import whisper; whisper.load_model('base')"
+   docker exec -it <container_id> python -c "import whisperx; whisperx.load_model('base', 'cpu', compute_type='int8')"
    ```
 
 ### Docker Compose Example
@@ -101,8 +101,8 @@ EchoNotes monitors the `/app/incoming` directory for new files. When it detects 
 - **PDF**: Extracts text using PyPDF2 or OCR via Tesseract if needed.
 - **Word Documents (DOCX)**: Extracts text using `python-docx`.
 - **Text Files (TXT)**: Reads the plain text.
-- **Audio Files (MP3)**: Transcribes speech to text using Whisper.
-- **Video Files (MP4)**: Extracts audio using FFmpeg, then transcribes it with Whisper.
+- **Audio Files (MP3)**: Transcribes speech to text using WhisperX.
+- **Video Files (MP4)**: Extracts audio using FFmpeg, then transcribes it with WhisperX.
 
 Once the text is extracted, it is summarized by sending the text and a customizable markdown prompt to a local LLM API.
 
@@ -114,7 +114,7 @@ The application is configured via a `config.yml` file mounted into the Docker co
 api_url: "http://localhost:5000/api/summarize"
 bearer_token: "your_api_token_here"
 model: "base"
-whisper_model: "base" # Specify the Whisper model to use ('tiny', 'base', 'small', 'medium', 'large')
+whisper_model: "base" # Specify the WhisperX ASR model to use ('tiny', 'base', 'small', 'medium', 'large')
 ```
 
 ### Markdown Prompt Customization

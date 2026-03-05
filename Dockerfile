@@ -11,13 +11,12 @@ RUN apt-get update && apt-get install -y \
 
 # Install Python packages
 COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir  -r /app/requirements.txt && \
-    pip install --no-cache-dir openai-whisper
+RUN pip install --no-cache-dir -r /app/requirements.txt
 
-# Pre-download multiple Whisper models
-RUN python -c "import whisper; whisper.load_model('tiny')" && \
-    python -c "import whisper; whisper.load_model('base')" && \
-    python -c "import whisper; whisper.load_model('small')"
+# Pre-download multiple WhisperX ASR models
+RUN python -c "import whisperx; whisperx.load_model('tiny', 'cpu', compute_type='int8')" && \
+    python -c "import whisperx; whisperx.load_model('base', 'cpu', compute_type='int8')" && \
+    python -c "import whisperx; whisperx.load_model('small', 'cpu', compute_type='int8')"
 
 
 # Clean up unnecessary files
