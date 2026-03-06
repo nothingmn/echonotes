@@ -131,7 +131,7 @@ llm:
   model: "gpt-4o-mini"
   base_url: "http://openwebui:3000/api"
   api_key: "your_api_token_here"
-  timeout_seconds: 120
+  timeout_seconds: null
   max_tokens: 2048
 
 whisper_model: "base" # Specify the WhisperX ASR model to use ('tiny', 'base', 'small', 'medium', 'large')
@@ -175,6 +175,8 @@ If `obsidian_template_path` is not provided, EchoNotes looks for `obsidian-templ
 - `legacy_generate`: keeps compatibility with the older single-endpoint `api_url` style config
 
 Chunking settings under `chunking:` apply to LLM-based transcript formatting and summarization.
+
+Set `llm.timeout_seconds: null` (or `0`) to disable the HTTP timeout and let slow local models run until they finish.
 
 ## Logging
 

@@ -189,12 +189,28 @@ class BaseLLMClient:
         self.settings = settings
         self.provider = settings.get("provider")
         self.model = settings.get("model")
-        self.timeout_seconds = float(settings.get("timeout_seconds", DEFAULT_LLM_TIMEOUT_SECONDS))
+        self.timeout_seconds = self._parse_timeout_seconds(settings.get("timeout_seconds", DEFAULT_LLM_TIMEOUT_SECONDS))
         self.temperature = settings.get("temperature")
         self.max_tokens = settings.get("max_tokens")
 
     def generate(self, prompt):
         raise NotImplementedError
+
+    @staticmethod
+    def _parse_timeout_seconds(timeout_value):
+        if timeout_value is None:
+            return None
+
+        if isinstance(timeout_value, str):
+            normalized = timeout_value.strip().lower()
+            if normalized in ("", "none", "null", "false", "off"):
+                return None
+            timeout_value = normalized
+
+        timeout_seconds = float(timeout_value)
+        if timeout_seconds <= 0:
+            return None
+        return timeout_seconds
 
     def _post_json(self, url, headers, payload):
         response = requests.post(url, json=payload, headers=headers, timeout=self.timeout_seconds)

@@ -3,7 +3,7 @@ llm:
   model: "qwen3:8b"
   base_url: "http://172.19.32.1:11434/api"
   api_key: ""
-  timeout_seconds: 120
+  timeout_seconds: null
   max_tokens: 2048
   temperature: 0.2
 

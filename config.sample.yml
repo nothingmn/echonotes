@@ -3,7 +3,7 @@ llm:
   model: ""
   base_url: ""
   api_key: ""
-  timeout_seconds: 120
+  timeout_seconds: null  # null or 0 disables HTTP timeout for slow local models
   max_tokens: 2048
   temperature: 0.2
   anthropic_version: "2023-06-01"  # only used for claude/anthropic
