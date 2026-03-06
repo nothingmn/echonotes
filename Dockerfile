@@ -27,7 +27,7 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_BREAK_SYSTEM_PACKAGES=1 \
     HF_HOME=/app/model-cache/hf \
     XDG_CACHE_HOME=/app/model-cache/xdg \
-    LD_LIBRARY_PATH=/usr/local/cuda/compat:/usr/local/cuda/lib64:/usr/local/cuda/targets/x86_64-linux/lib
+    LD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64
 
 WORKDIR /app
 
