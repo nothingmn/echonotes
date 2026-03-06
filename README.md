@@ -171,60 +171,30 @@ Versioned releases follow the same split:
    ./build.sh --list-models
    ```
 
-   To pre-download without rebuilding, start the container once with the cache mounted and let EchoNotes download the configured model at startup:
+   To pre-download without rebuilding, use the warm-only mode:
+   ```bash
+   ./build.sh --warm-model-cache-only --model-cache-dir ./model-cache
+   ./build.sh --warm-model-cache-only --gpu --model-cache-dir ./model-cache
+   ```
+
+   You can also warm the cache by starting the real worker once with the cache mounted and then stopping it after startup finishes:
    ```bash
    docker run --rm \
+     -v "$(pwd)/incoming:/app/incoming" \
+     -v "$(pwd)/vault:/app/vault" \
      -v "$(pwd)/config:/app/config" \
      -v "$(pwd)/model-cache:/app/model-cache" \
-     echonotes:latest \
-     python -c 'exec("""
-import os
-import sys
-import torch
-import whisperx
-import yaml
-sys.path.insert(0, "/app")
-from main import get_default_whisper_model, whisperx_torch_load_compat
-config = {}
-config_path = "/app/config/config.yml"
-if os.path.exists(config_path):
-    with open(config_path, "r") as f:
-        config = yaml.safe_load(f) or {}
-device = "cuda" if torch.cuda.is_available() else "cpu"
-compute_type = "float16" if device == "cuda" else "int8"
-model_name = config.get("whisper_model") or get_default_whisper_model()
-print(f"Warming WhisperX cache for model={model_name} device={device}")
-with whisperx_torch_load_compat():
-    whisperx.load_model(model_name, device, compute_type=compute_type)
-""")'
+     echonotes:latest
    ```
 
    For GPU:
    ```bash
    docker run --rm --gpus all \
+     -v "$(pwd)/incoming:/app/incoming" \
+     -v "$(pwd)/vault:/app/vault" \
      -v "$(pwd)/config:/app/config" \
      -v "$(pwd)/model-cache:/app/model-cache" \
-     echonotes:latest-cuda12.8 \
-     python -c 'exec("""
-import os
-import sys
-import torch
-import whisperx
-import yaml
-sys.path.insert(0, "/app")
-from main import get_default_whisper_model, whisperx_torch_load_compat
-config = {}
-config_path = "/app/config/config.yml"
-if os.path.exists(config_path):
-    with open(config_path, "r") as f:
-        config = yaml.safe_load(f) or {}
-device = "cuda" if torch.cuda.is_available() else "cpu"
-compute_type = "float16" if device == "cuda" else "int8"
-model_name = config.get("whisper_model") or get_default_whisper_model()
-print(f"Warming WhisperX cache for model={model_name} device={device}")
-with whisperx_torch_load_compat():
-    whisperx.load_model(model_name, device, compute_type=compute_type)
-""")'
+     echonotes:latest-cuda12.8
    ```
 
    To override the PyTorch wheel source during build:
