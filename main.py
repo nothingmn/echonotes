@@ -218,6 +218,10 @@ class BaseLLMClient:
         return response.json()
 
 
+class RecoverableProcessingError(RuntimeError):
+    pass
+
+
 class LegacyGenerateClient(BaseLLMClient):
     def generate(self, prompt):
         headers = {"Content-Type": "application/json"}
@@ -517,6 +521,11 @@ def split_text_into_chunks(text, target_chars, overlap_chars):
 def build_prompt(prompt_instructions, input_text, heading="INPUT"):
     return f"{prompt_instructions}\n\n# {heading}:\n\n{input_text}"
 
+
+def get_missing_ocr_dependencies():
+    required_binaries = ("pdfinfo", "pdftoppm", "tesseract")
+    return [binary for binary in required_binaries if not shutil.which(binary)]
+
 # Helper function to extract text from PDF using OCR and write it back to the same folder
 def extract_text_from_pdf(pdf_path):
     try:
@@ -528,19 +537,38 @@ def extract_text_from_pdf(pdf_path):
         # Extract text using PyPDF2
         with open(pdf_path, "rb") as f:
             pdf = PdfReader(f)
+            if pdf.is_encrypted:
+                decrypt_result = pdf.decrypt("")
+                if not decrypt_result:
+                    raise RecoverableProcessingError(
+                        f"Encrypted PDF requires a password and was skipped: {pdf_path}"
+                    )
             num_pages = len(pdf.pages)
             for page_num in range(num_pages):
                 page = pdf.pages[page_num]
-                text += page.extract_text()
+                text += page.extract_text() or ""
 
         # Fallback to OCR if no text is extracted
         if not text.strip():
             logging.warning(f"No extractable text found in {pdf_path}. Falling back to OCR.")
 
-            # Convert PDF to images and perform OCR
-            images = convert_from_path(pdf_path)
-            for img in images:
-                text += pytesseract.image_to_string(img)
+            missing_dependencies = get_missing_ocr_dependencies()
+            if missing_dependencies:
+                missing_list = ", ".join(missing_dependencies)
+                raise RecoverableProcessingError(
+                    f"OCR fallback requires installed executable dependencies ({missing_list}); "
+                    f"skipped OCR for {pdf_path}"
+                )
+
+            try:
+                images = convert_from_path(pdf_path)
+                for img in images:
+                    text += pytesseract.image_to_string(img)
+            except Exception as ocr_error:
+                raise RecoverableProcessingError(
+                    f"OCR fallback failed for {pdf_path}. Ensure Poppler and Tesseract are installed "
+                    f"and executable. Original error: {ocr_error}"
+                ) from ocr_error
 
         # Define the output filename based on the original PDF file
         base_filename = os.path.splitext(os.path.basename(pdf_path))[0]
@@ -555,6 +583,8 @@ def extract_text_from_pdf(pdf_path):
         return text, output_filename
     except FileNotFoundError:
         logging.error(f"The file {pdf_path} does not exist. Please ensure the file is available.")
+        raise
+    except RecoverableProcessingError:
         raise
     except Exception as e:
         logging.error(f"Error extracting text from {pdf_path}: {e}")
@@ -884,6 +914,10 @@ class FileProcessor:
 
             move_to_completed(working_file_path, output_files, self.completed_folder)
             logging.info(f"Processing is complete for {working_file_path}")
+        except RecoverableProcessingError as recoverable_error:
+            logging.warning(str(recoverable_error))
+            move_to_completed(working_file_path, output_files, self.completed_folder)
+            logging.info(f"Skipped processing for {working_file_path}")
         except Exception:
             logging.exception(f"Error processing {working_file_path}")
             raise
