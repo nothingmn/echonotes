@@ -85,7 +85,7 @@ for dir_var in INCOMING_DIR VAULT_DIR CONFIG_DIR; do
     fi
 done
 
-RUN_CMD=(docker run --init --name "$CONTAINER_NAME")
+RUN_CMD=(docker run --name "$CONTAINER_NAME")
 if [[ "$DETACH" -eq 1 ]]; then
     RUN_CMD+=(-d)
 else

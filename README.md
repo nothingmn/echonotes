@@ -57,7 +57,7 @@ Edit `config/config.yml` for your LLM endpoint, model, tokens, and any diarizati
 Run the persistent worker container:
 
 ```bash
-docker run -d --name echonotes --init \
+docker run -d --name echonotes \
   -v /path/to/incoming:/app/incoming \
   -v /path/to/vault:/app/vault \
   -v /path/to/config:/app/config \
@@ -68,7 +68,7 @@ docker run -d --name echonotes --init \
 Example from the repo root:
 
 ```bash
-docker run -d --name echonotes --init \
+docker run -d --name echonotes \
   -v "$(pwd)/incoming:/app/incoming" \
   -v "$(pwd)/vault:/app/vault" \
   -v "$(pwd)/config:/app/config" \
@@ -121,7 +121,7 @@ Versioned releases follow the same split:
 
    Run the long-lived worker container with the three runtime mounts:
    ```bash
-   docker run -d --name echonotes --init \
+   docker run -d --name echonotes \
      -v /path/to/incoming:/app/incoming \
      -v /path/to/vault:/app/vault \
      -v /path/to/config:/app/config \
@@ -155,7 +155,6 @@ version: '3.8'
 services:
   echonotes:
     image: echonotes:latest
-    init: true
     volumes:
       - ./incoming:/app/incoming
       - ./vault:/app/vault

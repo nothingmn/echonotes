@@ -27,7 +27,7 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_BREAK_SYSTEM_PACKAGES=1 \
     HF_HOME=/app/model-cache/hf \
     XDG_CACHE_HOME=/app/model-cache/xdg \
-    LD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64
+    LD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/local/lib/echonotes-cuda
 
 WORKDIR /app
 
@@ -55,6 +55,7 @@ COPY --from=gpu-cuda-devel /usr/local/cuda/targets /usr/local/cuda/targets
 
 FROM ${IMAGE_VARIANT}-runtime-base AS runtime
 
+ARG IMAGE_VARIANT
 ARG TORCH_INDEX_URL=https://pypi.org/simple
 ARG TORCH_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cpu
 ARG TORCH_PACKAGE_SPEC=torch==2.8.0+cpu
@@ -76,7 +77,20 @@ RUN if [ "${TORCH_INSTALL_NO_DEPS}" = "1" ]; then \
     else \
         pip install ${TORCH_INSTALL_ARGS} --index-url "${TORCH_INDEX_URL}" "${TORCH_PACKAGE_SPEC}" "${TORCHAUDIO_PACKAGE_SPEC}"; \
     fi
-RUN pip install -r /app/requirements.txt
+RUN pip install -r /app/requirements.txt && \
+    if [ "${IMAGE_VARIANT}" = "gpu" ]; then \
+        PYTHON_SITE_PACKAGES="$(python -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")" && \
+        mkdir -p /usr/local/lib/echonotes-cuda && \
+        for libdir in \
+            "${PYTHON_SITE_PACKAGES}/nvidia/cuda_cupti/lib" \
+            "${PYTHON_SITE_PACKAGES}/nvidia/cusparselt/lib" \
+            "${PYTHON_SITE_PACKAGES}/nvidia/nccl/lib"; do \
+            if [ -d "${libdir}" ]; then \
+                cp -a "${libdir}"/. /usr/local/lib/echonotes-cuda/; \
+            fi; \
+        done && \
+        python -m pip uninstall -y $(python -m pip list --format=freeze | cut -d= -f1 | grep '^nvidia-'); \
+    fi
 
 RUN mkdir -p /app/config-defaults /app/incoming /app/vault /app/config /app/model-cache/hf /app/model-cache/xdg
 
