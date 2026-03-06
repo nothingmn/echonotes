@@ -8,6 +8,9 @@ on:
       - "v*"
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 env:
   IMAGE_NAME: ${{ secrets.DOCKER_USERNAME }}/echonotes
 
@@ -92,3 +95,78 @@ jobs:
             TORCHAUDIO_PACKAGE_SPEC=${{ matrix.torchaudio_package_spec }}
             TORCH_INSTALL_NO_DEPS=${{ matrix.torch_install_no_deps }}
             TORCH_PYTHON_DEPS=${{ matrix.torch_python_deps }}
+
+  create-release:
+    if: github.ref_type == 'tag'
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build release assets
+        env:
+          VERSION: ${{ github.ref_name }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/release-assets
+
+          cp README.md dist/release-assets/
+          cp config.sample.yml dist/release-assets/
+          cp summarize-notes.md dist/release-assets/
+          cp build.sh dist/release-assets/
+          cp run.sh dist/release-assets/
+          cp Dockerfile dist/release-assets/
+
+          if [[ -f "releases/${VERSION}.md" ]]; then
+            cp "releases/${VERSION}.md" dist/release-notes.md
+          else
+            {
+              printf '# EchoNotes %s\n\n' "${VERSION}"
+              printf 'Docker images:\n\n'
+              printf -- '- %s:%s\n' "${IMAGE_NAME}" "${VERSION#v}"
+              printf -- '- %s:%s-cuda12.8\n' "${IMAGE_NAME}" "${VERSION#v}"
+              printf -- '- %s:latest\n' "${IMAGE_NAME}"
+              printf -- '- %s:latest-cuda12.8\n' "${IMAGE_NAME}"
+              printf -- '- %s:gpu\n' "${IMAGE_NAME}"
+            } > dist/release-notes.md
+          fi
+
+          {
+            printf '%s:%s\n' "${IMAGE_NAME}" "${VERSION#v}"
+            printf '%s:%s-cuda12.8\n' "${IMAGE_NAME}" "${VERSION#v}"
+            printf '%s:latest\n' "${IMAGE_NAME}"
+            printf '%s:latest-cuda12.8\n' "${IMAGE_NAME}"
+            printf '%s:gpu\n' "${IMAGE_NAME}"
+          } > "dist/docker-images-${VERSION}.txt"
+
+          python3 - <<PY
+          import hashlib
+          import pathlib
+          import zipfile
+
+          version = "${VERSION}"
+          asset_dir = pathlib.Path("dist/release-assets")
+          zip_path = pathlib.Path(f"dist/echonotes-{version}-assets.zip")
+          with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
+              for path in sorted(asset_dir.rglob("*")):
+                  if path.is_file():
+                      archive.write(path, path.relative_to(asset_dir))
+
+          digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+          pathlib.Path(f"dist/echonotes-{version}-assets.sha256").write_text(
+              f"{digest}  {zip_path.name}\n"
+          )
+          PY
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          body_path: dist/release-notes.md
+          files: |
+            dist/echonotes-${{ github.ref_name }}-assets.zip
+            dist/echonotes-${{ github.ref_name }}-assets.sha256
+            dist/docker-images-${{ github.ref_name }}.txt
