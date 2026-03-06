@@ -10,7 +10,6 @@ NO_CACHE=0
 IMAGE_VARIANT="cpu"
 CUDA_TAG="cuda12.8"
 GPU_BASE_IMAGE="nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04"
-GPU_CUDA_DEVEL_IMAGE="nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04"
 TORCH_INDEX_URL=""
 TORCH_EXTRA_INDEX_URL=""
 TORCH_PACKAGE_SPEC=""
@@ -30,7 +29,6 @@ Options:
   --gpu                      Shorthand for --variant gpu
   --cuda-tag <tag>           CUDA tag suffix used in default image naming (default: cuda12.8)
   --gpu-base-image <image>   Override the NVIDIA CUDA runtime image used for GPU builds
-  --gpu-devel-image <image>  Override the NVIDIA CUDA devel image used to source runtime libraries
   --no-cache                 Build the Docker image with --no-cache
   --torch-index-url <url>    Override the primary PyTorch wheel index used during docker build
   --torch-extra-index-url <url> Override the extra PyTorch wheel index used during docker build
@@ -67,10 +65,6 @@ while [[ $# -gt 0 ]]; do
             ;;
         --gpu-base-image)
             GPU_BASE_IMAGE="$2"
-            shift 2
-            ;;
-        --gpu-devel-image)
-            GPU_CUDA_DEVEL_IMAGE="$2"
             shift 2
             ;;
         --no-cache)
@@ -139,7 +133,6 @@ BUILD_CMD=(
     docker build
     --build-arg "IMAGE_VARIANT=$IMAGE_VARIANT"
     --build-arg "GPU_BASE_IMAGE=$GPU_BASE_IMAGE"
-    --build-arg "GPU_CUDA_DEVEL_IMAGE=$GPU_CUDA_DEVEL_IMAGE"
     --build-arg "TORCH_INDEX_URL=$TORCH_INDEX_URL"
     --build-arg "TORCH_EXTRA_INDEX_URL=$TORCH_EXTRA_INDEX_URL"
     --build-arg "TORCH_PACKAGE_SPEC=$TORCH_PACKAGE_SPEC"

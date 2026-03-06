@@ -23,7 +23,6 @@ jobs:
             image_suffix: ""
             gpu_alias: false
             gpu_base_image: nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04
-            gpu_cuda_devel_image: nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04
             torch_index_url: https://pypi.org/simple
             torch_extra_index_url: https://download.pytorch.org/whl/cpu
             torch_package_spec: torch==2.8.0+cpu
@@ -35,7 +34,6 @@ jobs:
             image_suffix: -cuda12.8
             gpu_alias: true
             gpu_base_image: nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04
-            gpu_cuda_devel_image: nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04
             torch_index_url: https://download.pytorch.org/whl/cu128
             torch_extra_index_url: ""
             torch_package_spec: torch==2.8.0
@@ -88,7 +86,6 @@ jobs:
           build-args: |
             IMAGE_VARIANT=${{ matrix.image_variant }}
             GPU_BASE_IMAGE=${{ matrix.gpu_base_image }}
-            GPU_CUDA_DEVEL_IMAGE=${{ matrix.gpu_cuda_devel_image }}
             TORCH_INDEX_URL=${{ matrix.torch_index_url }}
             TORCH_EXTRA_INDEX_URL=${{ matrix.torch_extra_index_url }}
             TORCH_PACKAGE_SPEC=${{ matrix.torch_package_spec }}

@@ -105,7 +105,6 @@ Versioned releases follow the same split:
    docker build \
      --build-arg IMAGE_VARIANT=gpu \
      --build-arg GPU_BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04 \
-     --build-arg GPU_CUDA_DEVEL_IMAGE=nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04 \
      --build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128 \
      --build-arg TORCH_EXTRA_INDEX_URL= \
      --build-arg TORCH_PACKAGE_SPEC=torch==2.8.0 \
@@ -115,7 +114,7 @@ Versioned releases follow the same split:
      -t echonotes:latest-cuda12.8 .
    ```
 
-   The GPU build uses a CUDA runtime image plus a CUDA devel stage that contributes the extra runtime libraries PyTorch expects, which keeps the image from duplicating the `nvidia-*` pip wheel bundle.
+   The GPU build uses the NVIDIA CUDA runtime image directly and keeps only the extra CUDA libraries that PyTorch still needs beyond that base, which avoids duplicating the full `nvidia-*` pip wheel bundle.
 
 2. **Run the Docker Container**:
 
