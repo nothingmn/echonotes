@@ -1492,6 +1492,15 @@ class FileHandler(FileSystemEventHandler):
         self.job_queue.put(file_path)
         logging.info(f"Queued file for background processing: {file_path}")
 
+    def queue_existing_files(self):
+        try:
+            for entry in sorted(os.scandir(self.path_to_watch), key=lambda item: item.name):
+                if not entry.is_file():
+                    continue
+                self._queue_file(entry.path)
+        except Exception as e:
+            logging.error(f"Error queueing existing files in {self.path_to_watch}: {e}")
+
     def on_created(self, event):
         try:
             if event.is_directory:
@@ -1554,12 +1563,13 @@ if __name__ == "__main__":
             vault_folder,
             whisper_model,
         )
-        worker_pool.start()
 
         event_handler = FileHandler(job_queue, path_to_watch)
         observer = Observer()
         observer.schedule(event_handler, path=path_to_watch, recursive=False)
         observer.start()
+        event_handler.queue_existing_files()
+        worker_pool.start()
 
         try:
             while True:
