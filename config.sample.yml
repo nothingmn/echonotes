@@ -12,6 +12,12 @@ llm:
 
 whisper_model: "tiny"  # see the Dockerfile; WhisperX ASR models preloaded during build are tiny, base, and small
 worker_count: 2  # number of background processing workers; on GPU, 1 is usually the safe default
+diarization_enabled: true  # enable WhisperX speaker diarization when a Hugging Face token is configured
+diarization_hf_token: ""  # required for speaker labels via pyannote/WhisperX diarization
+diarization_model_name: ""  # optional; leave blank to use WhisperX default diarization model
+diarization_num_speakers: null  # optional exact speaker count override
+diarization_min_speakers: null  # optional lower bound for speaker count
+diarization_max_speakers: null  # optional upper bound for speaker count
 format_transcripts: true  # format audio/video transcripts into readable markdown before saving and summarizing
 transcript_format_prompt_path: "/app/format-transcript.md"  # optional; built-in prompt is used if this file does not exist
 summary_prompt_path: "/app/summarize-notes.md"  # optional; defaults to /app/summarize-notes.md

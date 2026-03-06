@@ -26,6 +26,9 @@ EchoNotes is a Python-based application that monitors a folder for new files, ex
 - **Automatic Transcript Formatting**:
   - Audio and video transcripts can be reformatted into readable Markdown before saving.
   - Formatting falls back to the raw transcript if the formatter fails.
+- **Speaker Labels**:
+  - WhisperX diarization can label timestamped transcript lines as `Speaker 1`, `Speaker 2`, and so on.
+  - Speaker diarization requires a Hugging Face token for the pyannote diarization model.
 - **Automatic Chunking**:
   - Large transcripts are chunked and reduced automatically so long meetings do not overflow model context windows.
 - **Obsidian Export**:
@@ -136,6 +139,12 @@ llm:
 
 whisper_model: "base" # Specify the WhisperX ASR model to use ('tiny', 'base', 'small', 'medium', 'large')
 worker_count: 2 # Number of background workers to run concurrently; on GPU start with 1
+diarization_enabled: true # Enable WhisperX speaker diarization when configured
+diarization_hf_token: "" # Required for speaker labels via pyannote diarization
+diarization_model_name: "" # Optional; leave blank for WhisperX default
+diarization_num_speakers: null # Optional exact speaker count
+diarization_min_speakers: null # Optional lower bound
+diarization_max_speakers: null # Optional upper bound
 format_transcripts: true # Format audio/video transcripts into readable Markdown before summarization
 transcript_format_prompt_path: "/app/format-transcript.md" # Optional; built-in prompt is used if missing
 summary_prompt_path: "/app/summarize-notes.md" # Optional; defaults to /app/summarize-notes.md
@@ -162,6 +171,8 @@ If you mount an Obsidian vault folder at `vault_path`, EchoNotes also copies aud
 - An Obsidian note markdown file
 
 If `obsidian_template_path` is not provided, EchoNotes looks for `obsidian-template.md` next to the summarization prompt. If that file is missing, it uses a built-in plain template.
+
+For speaker labels in audio/video transcripts, configure `diarization_hf_token`. When diarization is available, EchoNotes writes labels like `Speaker 1` and `Speaker 2` into the timestamped transcript lines.
 
 ### LLM Providers
 

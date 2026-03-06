@@ -9,6 +9,12 @@ llm:
 
 whisper_model: "base"
 worker_count: 1
+diarization_enabled: true
+diarization_hf_token: ""
+diarization_model_name: ""
+diarization_num_speakers: null
+diarization_min_speakers: null
+diarization_max_speakers: null
 format_transcripts: true
 transcript_format_prompt_path: "/app/format-transcript.md"
 summary_prompt_path: "/app/summarize-notes.md"

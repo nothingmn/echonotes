@@ -151,6 +151,17 @@ def get_chunking_settings(config):
     }
 
 
+def get_diarization_settings(config):
+    return {
+        "enabled": bool(config.get("diarization_enabled", True)),
+        "hf_token": (config.get("diarization_hf_token") or "").strip(),
+        "model_name": (config.get("diarization_model_name") or "").strip() or None,
+        "num_speakers": config.get("diarization_num_speakers"),
+        "min_speakers": config.get("diarization_min_speakers"),
+        "max_speakers": config.get("diarization_max_speakers"),
+    }
+
+
 def get_file_extension(file_path):
     return os.path.splitext(file_path)[1].lower()
 
@@ -485,6 +496,176 @@ def build_linked_transcript(audio_filename, segments):
     return "\n".join(lines).strip()
 
 
+def normalize_speaker_name(raw_speaker, speaker_names):
+    if not raw_speaker:
+        return None
+
+    if raw_speaker not in speaker_names:
+        speaker_names[raw_speaker] = f"Speaker {len(speaker_names) + 1}"
+
+    return speaker_names[raw_speaker]
+
+
+def normalize_diarization_turns(diarization_segments):
+    if diarization_segments is None:
+        return []
+
+    if hasattr(diarization_segments, "itertuples"):
+        turns = []
+        for row in diarization_segments.itertuples(index=False):
+            speaker = getattr(row, "speaker", None)
+            start = getattr(row, "start", None)
+            end = getattr(row, "end", None)
+            if speaker is None or start is None or end is None:
+                continue
+            turns.append(
+                {
+                    "start": float(start),
+                    "end": float(end),
+                    "speaker": speaker,
+                }
+            )
+        return turns
+
+    turns = []
+    for segment in diarization_segments:
+        speaker = segment.get("speaker")
+        start = segment.get("start")
+        end = segment.get("end")
+        if speaker is None or start is None or end is None:
+            continue
+        turns.append(
+            {
+                "start": float(start),
+                "end": float(end),
+                "speaker": speaker,
+            }
+        )
+    return turns
+
+
+def get_speaker_for_interval(start, end, diarization_turns):
+    if not diarization_turns:
+        return None
+
+    interval_start = float(start or 0)
+    interval_end = float(end if end is not None else interval_start)
+    if interval_end < interval_start:
+        interval_end = interval_start
+
+    best_speaker = None
+    best_overlap = 0.0
+
+    for turn in diarization_turns:
+        overlap = min(interval_end, turn["end"]) - max(interval_start, turn["start"])
+        if overlap > best_overlap:
+            best_overlap = overlap
+            best_speaker = turn["speaker"]
+
+    if best_speaker:
+        return best_speaker
+
+    midpoint = (interval_start + interval_end) / 2
+    nearest_turn = min(
+        diarization_turns,
+        key=lambda turn: min(abs(midpoint - turn["start"]), abs(midpoint - turn["end"])),
+    )
+    return nearest_turn["speaker"]
+
+
+def combine_word_tokens(words):
+    tokens = [word.get("text", "").strip() for word in words if word.get("text", "").strip()]
+    return " ".join(tokens).strip()
+
+
+def append_speakerized_segment(target, words, fallback_segment=None):
+    if not words:
+        return
+
+    text = combine_word_tokens(words)
+    if not text:
+        return
+
+    segment_start = words[0].get("start")
+    segment_end = words[-1].get("end")
+
+    if segment_start is None and fallback_segment:
+        segment_start = fallback_segment.get("start", 0)
+    if segment_end is None and fallback_segment:
+        segment_end = fallback_segment.get("end")
+
+    target.append(
+        {
+            "start": segment_start if segment_start is not None else 0,
+            "end": segment_end,
+            "text": text,
+            "speaker": words[0].get("speaker"),
+        }
+    )
+
+
+def assign_diarization_to_transcript_segments(segments, diarization_segments):
+    diarization_turns = normalize_diarization_turns(diarization_segments)
+    if not diarization_turns:
+        return segments
+
+    speakerized_segments = []
+
+    for segment in segments:
+        words = segment.get("words") or []
+        aligned_words = []
+
+        for word in words:
+            text = (word.get("word") or "").strip()
+            if not text:
+                continue
+
+            word_start = word.get("start", segment.get("start", 0))
+            word_end = word.get("end")
+            if word_end is None:
+                word_end = word_start if word_start is not None else segment.get("end")
+
+            aligned_words.append(
+                {
+                    "text": text,
+                    "start": word_start,
+                    "end": word_end,
+                    "speaker": get_speaker_for_interval(word_start, word_end, diarization_turns),
+                }
+            )
+
+        if aligned_words:
+            current_words = []
+            current_speaker = None
+
+            for word in aligned_words:
+                word_speaker = word.get("speaker")
+                if current_words and word_speaker != current_speaker:
+                    append_speakerized_segment(speakerized_segments, current_words, segment)
+                    current_words = []
+
+                current_words.append(word)
+                current_speaker = word_speaker
+
+            append_speakerized_segment(speakerized_segments, current_words, segment)
+            continue
+
+        speakerized_segments.append(
+            {
+                "start": segment.get("start", 0),
+                "end": segment.get("end"),
+                "text": segment.get("text", "").strip(),
+                "speaker": get_speaker_for_interval(
+                    segment.get("start", 0),
+                    segment.get("end"),
+                    diarization_turns,
+                ),
+            }
+        )
+
+    return [segment for segment in speakerized_segments if segment.get("text")]
+
+
 def split_text_into_chunks(text, target_chars, overlap_chars):
     if len(text) <= target_chars:
         return [text]
@@ -747,7 +928,7 @@ def extract_text_from_txt(file_name):
         
 
 class WhisperXTranscriber:
-    def __init__(self, whisper_model):
+    def __init__(self, whisper_model, diarization_settings=None):
         import torch
 
         self.whisper_model = whisper_model
@@ -755,6 +936,8 @@ class WhisperXTranscriber:
         self.compute_type = "float16" if self.device == "cuda" else "int8"
         self.batch_size = 16 if self.device == "cuda" else 4
         self.align_models = {}
+        self.diarization_settings = diarization_settings or {}
+        self.diarization_model = None
 
         logging.info(
             f"Loading WhisperX model at startup "
@@ -766,6 +949,24 @@ class WhisperXTranscriber:
                 self.device,
                 compute_type=self.compute_type,
             )
+
+        if self.diarization_settings.get("enabled", True):
+            hf_token = self.diarization_settings.get("hf_token")
+            if hf_token:
+                from whisperx.diarize import DiarizationPipeline
+
+                logging.info(f"Loading WhisperX diarization pipeline at startup (device={self.device})")
+                with whisperx_torch_load_compat():
+                    self.diarization_model = DiarizationPipeline(
+                        model_name=self.diarization_settings.get("model_name"),
+                        use_auth_token=hf_token,
+                        device=self.device,
+                    )
+            else:
+                logging.warning(
+                    "Speaker diarization is enabled but no diarization_hf_token is configured; "
+                    "transcripts will not include speaker labels"
+                )
 
     def _get_align_model(self, language_code):
         if language_code not in self.align_models:
@@ -786,8 +987,9 @@ class WhisperXTranscriber:
 
             audio = whisperx.load_audio(audio_path)
             result = self.model.transcribe(audio, batch_size=self.batch_size)
+            transcript_result = result
 
-            segments = result.get("segments", [])
+            segments = transcript_result.get("segments", [])
             if segments and result.get("language"):
                 try:
                     align_model, metadata = self._get_align_model(result["language"])
@@ -799,18 +1001,37 @@ class WhisperXTranscriber:
                         self.device,
                         return_char_alignments=False,
                     )
-                    segments = aligned_result.get("segments", segments)
+                    transcript_result = aligned_result
+                    segments = transcript_result.get("segments", segments)
                 except Exception as align_error:
                     logging.warning(
                         f"WhisperX alignment failed for {audio_path}; using unaligned transcript: {align_error}"
                     )
 
+            if self.diarization_model and segments:
+                try:
+                    diarization_kwargs = {}
+                    for key in ("num_speakers", "min_speakers", "max_speakers"):
+                        value = self.diarization_settings.get(key)
+                        if value is not None and value != "":
+                            diarization_kwargs[key] = int(value)
+
+                    diarize_segments = self.diarization_model(audio, **diarization_kwargs)
+                    segments = assign_diarization_to_transcript_segments(segments, diarize_segments)
+                    transcript_result["segments"] = segments
+                except Exception as diarization_error:
+                    logging.warning(
+                        f"WhisperX diarization failed for {audio_path}; using transcript without speaker labels: "
+                        f"{diarization_error}"
+                    )
+
+            speaker_names = {}
             normalized_segments = [
                 {
                     "start": segment.get("start", 0),
                     "end": segment.get("end"),
                     "text": segment.get("text", "").strip(),
-                    "speaker": segment.get("speaker"),
+                    "speaker": normalize_speaker_name(segment.get("speaker"), speaker_names),
                 }
                 for segment in segments
                 if segment.get("text") and segment["text"].strip()
@@ -1097,7 +1318,10 @@ class ProcessingWorker(threading.Thread):
 
     def run(self):
         logging.info(f"Starting processing worker {self.worker_id}")
-        transcriber = WhisperXTranscriber(self.whisper_model)
+        transcriber = WhisperXTranscriber(
+            self.whisper_model,
+            get_diarization_settings(self.config),
+        )
         llm_client = build_llm_client(self.config)
         self.processor = FileProcessor(
             self.config,
