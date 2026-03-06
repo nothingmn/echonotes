@@ -23,6 +23,7 @@ EchoNotes is a Python-based application that monitors a folder for new files, ex
 - **Background Worker Pool**:
   - Files are queued immediately by the watcher and processed by persistent workers.
   - Each worker keeps its model loaded to avoid per-file startup costs.
+  - The container is intended to run continuously while monitoring the mounted `incoming/` folder.
 - **Automatic Transcript Formatting**:
   - Audio and video transcripts can be reformatted into readable Markdown before saving.
   - Formatting falls back to the raw transcript if the formatter fails.
@@ -35,34 +36,43 @@ EchoNotes is a Python-based application that monitors a folder for new files, ex
   - Audio/video jobs can copy the final MP3, transcript, summary, and an Obsidian note into `vault/`.
   - The Obsidian note template is loaded from the same area as the summarization prompt, with a built-in fallback.
 - **Logging**: Extensive logging to help track operations and errors.
+- **Ingestion Hardening**:
+  - Partial-copy files are held until their size stabilizes.
+  - Temporary files and hidden dot-paths such as `.obsidian` and `.stfolder` are ignored.
 
 ## Requirements
 
 ### Quick Start via Docker
 
-   ```base
-   cp config.sample.yml config.yml
-   ```
-   Edit config.yml and make sure you enter your correct Ollama endpoint, API token, etc.
-   
-   Then:
+Create a config directory and place your runtime files there:
 
-   ```bash
-   docker run -v /path/to/incoming:/app/incoming -v /path/to/config.yml:/app/config.yml -v /path/to/summarize-notes.md:/app/summarize-notes.md -v /path/to/vault:/app/vault echonotes
-   ```
+```bash
+mkdir -p config incoming vault
+cp config.sample.yml config/config.yml
+cp summarize-notes.md config/summarize-notes.md
+```
 
-   For example
+Edit `config/config.yml` for your LLM endpoint, model, tokens, and any diarization settings.
 
-   ```bash
-    docker run --rm -v "$(pwd)//incoming:/app/incoming" \
-            -v "$(pwd)/config.yml:/app/config.yml" \
-            -v "$(pwd)//summarize-notes.md:/app/summarize-notes.md" \
-            -v "$(pwd)//vault:/app/vault" \
-            echonotes:latest
-   ```
+Run the persistent worker container:
 
+```bash
+docker run -d --name echonotes --init \
+  -v /path/to/incoming:/app/incoming \
+  -v /path/to/vault:/app/vault \
+  -v /path/to/config:/app/config \
+  echonotes:latest
+```
 
+Example from the repo root:
 
+```bash
+docker run -d --name echonotes --init \
+  -v "$(pwd)/incoming:/app/incoming" \
+  -v "$(pwd)/vault:/app/vault" \
+  -v "$(pwd)/config:/app/config" \
+  echonotes:latest
+```
 
 ## Installation from source, via docker.
 
@@ -77,9 +87,13 @@ EchoNotes is a Python-based application that monitors a folder for new files, ex
 
 2. **Run the Docker Container**:
 
-   Run the Docker container, mounting the appropriate volumes:
+   Run the long-lived worker container with the three runtime mounts:
    ```bash
-   docker run -v /path/to/incoming:/app/incoming -v /path/to/config.yml:/app/config.yml -v /path/to/summarize-notes.md:/app/summarize-notes.md -v /path/to/vault:/app/vault echonotes
+   docker run -d --name echonotes --init \
+     -v /path/to/incoming:/app/incoming \
+     -v /path/to/vault:/app/vault \
+     -v /path/to/config:/app/config \
+     echonotes:latest
    ```
 
 3. **Pre-Download WhisperX Models (Optional)**:
@@ -98,11 +112,11 @@ version: '3.8'
 services:
   echonotes:
     image: echonotes:latest
+    init: true
     volumes:
       - ./incoming:/app/incoming
-      - ./config.yml:/app/config.yml
-      - ./summarize-notes.md:/app/summarize-notes.md
       - ./vault:/app/vault
+      - ./config:/app/config
     restart: unless-stopped
 ```
 
@@ -114,7 +128,7 @@ docker-compose up -d
 
 ## Usage
 
-EchoNotes monitors the `/app/incoming` directory for new files. When it detects a new file, it processes it according to the file type:
+EchoNotes monitors the `/app/incoming` directory continuously. When it detects a new file, it processes it according to the file type:
 
 - **PDF**: Extracts text using PyPDF2 or OCR via Tesseract if needed.
 - **Word Documents (DOCX)**: Extracts text using `python-docx`.
@@ -124,11 +138,15 @@ EchoNotes monitors the `/app/incoming` directory for new files. When it detects 
 
 Once the text is extracted, it can be summarized by sending the text and a customizable markdown prompt to a configured LLM provider. If no LLM provider is configured, EchoNotes will still extract and transcribe files, but it will skip LLM-based formatting and summarization.
 
+Files placed in hidden folders or dot-paths such as `.obsidian`, `.stfolder`, or `.syncthing*` are ignored. Temporary partial-download files such as `.part`, `.tmp`, and `.crdownload` are also ignored.
+
 ## Configuration
 
-The application is configured via a `config.yml` file mounted into the Docker container. An example configuration file is shown below:
+The application is configured via `/app/config/config.yml`. The image also includes baked defaults in `/app/config-defaults`, so if a prompt file is missing from the mounted config directory EchoNotes falls back to the image default where available. An example configuration file is shown below:
 
 ```yaml
+path_to_watch: "/app/incoming"
+
 llm:
   provider: "openwebui"
   model: "gpt-4o-mini"
@@ -146,10 +164,10 @@ diarization_num_speakers: null # Optional exact speaker count
 diarization_min_speakers: null # Optional lower bound
 diarization_max_speakers: null # Optional upper bound
 format_transcripts: true # Format audio/video transcripts into readable Markdown before summarization
-transcript_format_prompt_path: "/app/format-transcript.md" # Optional; built-in prompt is used if missing
-summary_prompt_path: "/app/summarize-notes.md" # Optional; defaults to /app/summarize-notes.md
+transcript_format_prompt_path: "/app/config/format-transcript.md" # Optional; built-in prompt is used if missing
+summary_prompt_path: "/app/config/summarize-notes.md" # Optional; falls back to /app/config-defaults/summarize-notes.md
 vault_path: "/app/vault" # Folder where Obsidian-ready artifacts are copied
-obsidian_template_path: "/app/obsidian-template.md" # Optional; defaults next to summarize-notes.md or a built-in template
+obsidian_template_path: "/app/config/obsidian-template.md" # Optional; defaults next to summarize-notes.md or a built-in template
 
 chunking:
   enabled: true
@@ -160,9 +178,13 @@ chunking:
 
 ### Markdown Prompt Customization
 
-The prompt file (`summarize-notes.md`) is used to prepend any instructions for summarization. Update it as you see fit.
+Put your custom runtime files in the mounted `/app/config` directory:
+- `config.yml`
+- `summarize-notes.md`
+- `format-transcript.md`
+- `obsidian-template.md`
 
-If you want to customize transcript formatting, you can optionally mount a separate prompt file and point `transcript_format_prompt_path` at it. If no file exists there, EchoNotes uses a built-in transcript-formatting prompt.
+The summarization prompt (`summarize-notes.md`) is used to prepend instructions for summaries. If you want to customize transcript formatting, place `format-transcript.md` in the same config directory and point `transcript_format_prompt_path` at it. If no transcript-format prompt exists there, EchoNotes uses a built-in transcript-formatting prompt.
 
 If you mount an Obsidian vault folder at `vault_path`, EchoNotes also copies audio-ready artifacts there for audio and video jobs:
 - The final MP3
@@ -198,9 +220,11 @@ The application logs all activities and errors to help with debugging and tracki
 
 ## Folder Structure
 
-- **incoming**: Monitored folder where new files are placed for processing.
+- **incoming**: Monitored input mount where new files are placed for processing.
 - **working**: Temporary folder where files are processed.
-- **completed**: Once processed, files (and summaries) are moved to the `completed` folder.
+- **completed**: Once processed, files and generated artifacts are moved under `incoming/completed`.
+- **vault**: Output mount where final MP3, transcript, summary, and Obsidian note are copied.
+- **config**: Mounted runtime config directory for `config.yml` and prompt/template overrides.
 
 ## Contributing
 

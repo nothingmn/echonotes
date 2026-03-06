@@ -1,3 +1,5 @@
+path_to_watch: "/app/incoming"
+
 llm:
   provider: "ollama"
   model: "qwen3:8b"
@@ -16,10 +18,10 @@ diarization_num_speakers: null
 diarization_min_speakers: null
 diarization_max_speakers: null
 format_transcripts: true
-transcript_format_prompt_path: "/app/format-transcript.md"
-summary_prompt_path: "/app/summarize-notes.md"
+transcript_format_prompt_path: "/app/config/format-transcript.md"
+summary_prompt_path: "/app/config/summarize-notes.md"
 vault_path: "/app/vault"
-obsidian_template_path: "/app/obsidian-template.md"
+obsidian_template_path: "/app/config/obsidian-template.md"
 
 chunking:
   enabled: true

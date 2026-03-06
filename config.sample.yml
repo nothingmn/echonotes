@@ -1,3 +1,5 @@
+path_to_watch: "/app/incoming"  # mounted input folder watched continuously by the worker
+
 llm:
   provider: ""  # one of: openwebui, ollama, openai, claude, anthropic, openrouter, legacy_generate
   model: ""
@@ -19,10 +21,10 @@ diarization_num_speakers: null  # optional exact speaker count override
 diarization_min_speakers: null  # optional lower bound for speaker count
 diarization_max_speakers: null  # optional upper bound for speaker count
 format_transcripts: true  # format audio/video transcripts into readable markdown before saving and summarizing
-transcript_format_prompt_path: "/app/format-transcript.md"  # optional; built-in prompt is used if this file does not exist
-summary_prompt_path: "/app/summarize-notes.md"  # optional; defaults to /app/summarize-notes.md
+transcript_format_prompt_path: "/app/config/format-transcript.md"  # optional; built-in prompt is used if this file does not exist
+summary_prompt_path: "/app/config/summarize-notes.md"  # optional; falls back to /app/config-defaults/summarize-notes.md
 vault_path: "/app/vault"  # folder inside your Obsidian vault where audio artifacts and notes are copied
-obsidian_template_path: "/app/obsidian-template.md"  # optional; defaults to a template next to summarize-notes.md or a built-in plain template
+obsidian_template_path: "/app/config/obsidian-template.md"  # optional; defaults to a template next to summarize-notes.md or a built-in plain template
 
 chunking:
   enabled: true

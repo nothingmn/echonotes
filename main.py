@@ -42,9 +42,21 @@ AUDIO_EXTENSIONS = (
 VIDEO_EXTENSIONS = (".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v")
 SUPPORTED_EXTENSIONS = DOCUMENT_EXTENSIONS + AUDIO_EXTENSIONS + VIDEO_EXTENSIONS
 TEMP_FILE_SUFFIXES = (".part", ".tmp", ".crdownload")
-DEFAULT_SUMMARY_PROMPT_PATH = "/app/summarize-notes.md"
-DEFAULT_VAULT_PATH = "/app/vault"
+APP_ROOT = "/app"
+DEFAULT_INCOMING_PATH = f"{APP_ROOT}/incoming"
+DEFAULT_VAULT_PATH = f"{APP_ROOT}/vault"
+DEFAULT_CONFIG_DIR = f"{APP_ROOT}/config"
+DEFAULT_CONFIG_DEFAULTS_DIR = f"{APP_ROOT}/config-defaults"
+DEFAULT_CONFIG_PATH = f"{DEFAULT_CONFIG_DIR}/config.yml"
+DEFAULT_CONFIG_FALLBACK_PATH = f"{DEFAULT_CONFIG_DEFAULTS_DIR}/config.yml"
+LEGACY_CONFIG_PATH = f"{APP_ROOT}/config.yml"
+DEFAULT_SUMMARY_PROMPT_NAME = "summarize-notes.md"
+DEFAULT_SUMMARY_PROMPT_PATH = f"{DEFAULT_CONFIG_DIR}/{DEFAULT_SUMMARY_PROMPT_NAME}"
+DEFAULT_SUMMARY_PROMPT_FALLBACK_PATH = f"{DEFAULT_CONFIG_DEFAULTS_DIR}/{DEFAULT_SUMMARY_PROMPT_NAME}"
+DEFAULT_TRANSCRIPT_FORMAT_PROMPT_NAME = "format-transcript.md"
+DEFAULT_TRANSCRIPT_FORMAT_PROMPT_PATH = f"{DEFAULT_CONFIG_DIR}/{DEFAULT_TRANSCRIPT_FORMAT_PROMPT_NAME}"
 DEFAULT_OBSIDIAN_TEMPLATE_NAME = "obsidian-template.md"
+DEFAULT_OBSIDIAN_TEMPLATE_PATH = f"{DEFAULT_CONFIG_DIR}/{DEFAULT_OBSIDIAN_TEMPLATE_NAME}"
 DEFAULT_LLM_TIMEOUT_SECONDS = 120
 DEFAULT_CHUNK_MAX_INPUT_CHARS = 24000
 DEFAULT_CHUNK_TARGET_CHARS = 16000
@@ -97,7 +109,14 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 
 # Load config
-def load_config(config_path="/app/config.yml"):
+def load_config(config_path=None):
+    if not config_path:
+        config_path = (
+            os.environ.get("ECHONOTES_CONFIG_PATH")
+            or first_existing_path(DEFAULT_CONFIG_PATH, DEFAULT_CONFIG_FALLBACK_PATH, LEGACY_CONFIG_PATH)
+            or DEFAULT_CONFIG_PATH
+        )
+
     try:
         with open(config_path, 'r') as f:
             return yaml.safe_load(f)
@@ -368,6 +387,39 @@ def load_prompt(prompt_path, default_content):
     return default_content
 
 
+def first_existing_path(*paths):
+    for path in paths:
+        if path and os.path.exists(path):
+            return path
+    return None
+
+
+def resolve_config_asset_path(configured_path, default_path, fallback_path=None):
+    if configured_path and os.path.exists(configured_path):
+        return configured_path
+
+    if configured_path:
+        logging.warning(f"Configured path does not exist, falling back to defaults: {configured_path}")
+
+    return first_existing_path(default_path, fallback_path) or configured_path or default_path or fallback_path
+
+
+def path_has_hidden_component(path, root_path=None):
+    if not path:
+        return False
+
+    normalized_path = os.path.normpath(path)
+    if root_path:
+        normalized_root = os.path.normpath(root_path)
+        try:
+            normalized_path = os.path.relpath(normalized_path, normalized_root)
+        except ValueError:
+            pass
+
+    parts = [part for part in normalized_path.split(os.sep) if part not in ("", ".", "..")]
+    return any(part.startswith(".") for part in parts)
+
+
 def strip_outer_fenced_block(text):
     if not isinstance(text, str):
         return ""
@@ -444,21 +496,34 @@ def whisperx_torch_load_compat():
 
 
 def get_summary_prompt_path(config):
-    return config.get("summary_prompt_path", DEFAULT_SUMMARY_PROMPT_PATH)
+    return resolve_config_asset_path(
+        config.get("summary_prompt_path"),
+        DEFAULT_SUMMARY_PROMPT_PATH,
+        DEFAULT_SUMMARY_PROMPT_FALLBACK_PATH,
+    )
+
+
+def get_transcript_format_prompt_path(config):
+    return resolve_config_asset_path(
+        config.get("transcript_format_prompt_path"),
+        DEFAULT_TRANSCRIPT_FORMAT_PROMPT_PATH,
+    )
 
 
 def get_obsidian_template_path(config):
-    configured_path = config.get("obsidian_template_path")
-    if configured_path:
-        return configured_path
-    return os.path.join(
-        os.path.dirname(get_summary_prompt_path(config)),
-        DEFAULT_OBSIDIAN_TEMPLATE_NAME,
+    return resolve_config_asset_path(
+        config.get("obsidian_template_path"),
+        DEFAULT_OBSIDIAN_TEMPLATE_PATH,
+        os.path.join(os.path.dirname(get_summary_prompt_path(config)), DEFAULT_OBSIDIAN_TEMPLATE_NAME),
     )
 
 
 def get_vault_path(config):
     return config.get("vault_path", DEFAULT_VAULT_PATH)
+
+
+def get_watch_path(config):
+    return config.get("path_to_watch", DEFAULT_INCOMING_PATH)
 
 
 def render_template(template, context):
@@ -1063,6 +1128,10 @@ class FileProcessor:
         self.chunking = get_chunking_settings(config)
 
     def process(self, source_path):
+        if os.path.basename(source_path).startswith("."):
+            logging.info(f"Skipping hidden path: {source_path}")
+            return
+
         wait_for_file_stable(source_path)
         working_file_path = move_to_working(source_path, self.working_folder)
         file_extension = get_file_extension(working_file_path)
@@ -1151,7 +1220,7 @@ class FileProcessor:
         if self.llm_client and self.config.get("format_transcripts", True):
             try:
                 logging.info(f"Formatting transcript for {audio_path}")
-                prompt_path = self.config.get("transcript_format_prompt_path", "/app/format-transcript.md")
+                prompt_path = get_transcript_format_prompt_path(self.config)
                 prompt_content = load_prompt(prompt_path, DEFAULT_TRANSCRIPT_FORMAT_PROMPT)
                 candidate = self.generate_formatted_transcript(prompt_content, plain_transcript).strip()
                 if candidate:
@@ -1385,29 +1454,53 @@ class FileHandler(FileSystemEventHandler):
         self.job_queue = job_queue
         self.path_to_watch = path_to_watch
 
+    def _should_ignore_path(self, file_path):
+        if path_has_hidden_component(file_path, self.path_to_watch):
+            logging.info(f"Ignoring hidden path: {file_path}")
+            return True
+
+        if file_path.lower().endswith(TEMP_FILE_SUFFIXES):
+            logging.info(f"Ignoring temporary file: {file_path}")
+            return True
+
+        if not is_supported_file(file_path):
+            logging.info(f"Ignoring unsupported file: {file_path}")
+            return True
+
+        return False
+
+    def _queue_file(self, file_path):
+        parent_dir = os.path.dirname(file_path)
+        if parent_dir != self.path_to_watch:
+            return
+
+        if self._should_ignore_path(file_path):
+            return
+
+        self.job_queue.put(file_path)
+        logging.info(f"Queued file for background processing: {file_path}")
+
     def on_created(self, event):
         try:
             if event.is_directory:
+                if path_has_hidden_component(event.src_path, self.path_to_watch):
+                    logging.info(f"Ignoring hidden directory: {event.src_path}")
                 return
 
-            parent_dir = os.path.dirname(event.src_path)
-            if parent_dir != self.path_to_watch:
-                return
-
-            normalized_path = event.src_path.lower()
-
-            if normalized_path.endswith(TEMP_FILE_SUFFIXES):
-                logging.info(f"Ignoring temporary file: {event.src_path}")
-                return
-
-            if not is_supported_file(event.src_path):
-                logging.info(f"Ignoring unsupported file: {event.src_path}")
-                return
-
-            self.job_queue.put(event.src_path)
-            logging.info(f"Queued file for background processing: {event.src_path}")
+            self._queue_file(event.src_path)
         except Exception as e:
             logging.error(f"Error queueing {event.src_path}: {e}")
+
+    def on_moved(self, event):
+        try:
+            if event.is_directory:
+                if path_has_hidden_component(event.dest_path, self.path_to_watch):
+                    logging.info(f"Ignoring hidden directory: {event.dest_path}")
+                return
+
+            self._queue_file(event.dest_path)
+        except Exception as e:
+            logging.error(f"Error queueing moved file {event.dest_path}: {e}")
 
         
 
@@ -1430,7 +1523,7 @@ if __name__ == "__main__":
         logging.info(f"Starting worker pool with {worker_count} worker(s)")
 
         # Set up directory monitoring
-        path_to_watch = "/app/incoming"
+        path_to_watch = get_watch_path(config)
         if not os.path.exists(path_to_watch):
             logging.error(f"Directory {path_to_watch} does not exist. Please ensure the folder is mounted.")
             raise FileNotFoundError(f"Directory {path_to_watch} not found")

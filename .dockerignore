@@ -1,0 +1,10 @@
+.git
+.github
+__pycache__/
+*.pyc
+Testing/
+incoming/
+vault/
+config/
+*.log
+.env*

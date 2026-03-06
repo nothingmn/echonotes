@@ -1,42 +1,32 @@
 FROM python:3.10-slim
 
-# Install dependencies
-RUN apt-get update && apt-get install -y \
-    tesseract-ocr \
-    libtesseract-dev \
-    poppler-utils \
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
-    git
-    
+    poppler-utils \
+    tesseract-ocr \
+    tini \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install Python packages
 COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
+RUN pip install -r /app/requirements.txt
 
-# Pre-download multiple WhisperX ASR models
+# Pre-download the most common CPU WhisperX ASR models so startup stays fast.
 RUN python -c "import whisperx; whisperx.load_model('tiny', 'cpu', compute_type='int8')" && \
     python -c "import whisperx; whisperx.load_model('base', 'cpu', compute_type='int8')" && \
     python -c "import whisperx; whisperx.load_model('small', 'cpu', compute_type='int8')"
 
+RUN mkdir -p /app/config-defaults /app/incoming /app/vault /app/config
 
-# Clean up unnecessary files
-RUN apt-get clean && \
-    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+COPY main.py README.md /app/
+COPY config.sample.yml /app/config-defaults/config.yml
+COPY summarize-notes.md /app/config-defaults/summarize-notes.md
 
-# Copy app files
-COPY main.py /app/main.py
-WORKDIR /app
+VOLUME ["/app/incoming", "/app/vault", "/app/config"]
 
-# Expose the incoming directory as a volume
-VOLUME /app/incoming
-
-# Expose the prompt file as a volume
-VOLUME /app/summarize-notes.md
-
-# Expose the config file as a volume
-VOLUME /app/config.yml
-
-# Expose the Obsidian vault export folder as a volume
-VOLUME /app/vault
-
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["python", "/app/main.py"]
