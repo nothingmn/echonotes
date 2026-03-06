@@ -153,7 +153,23 @@ Versioned releases follow the same split:
    ./build.sh --gpu --model-cache-dir ./model-cache
    ```
 
-   `build.sh` only warms the cache if the target cache directory is empty. If the cache already contains model files, it skips the warmup step.
+   Those commands build the image first, then warm the cache. `build.sh` only performs the automatic warmup step when the target cache directory is empty, unless you explicitly pass `--model`.
+
+   To warm the cache without building:
+   ```bash
+   ./build.sh --warm-model-cache-only --model-cache-dir ./model-cache
+   ```
+
+   If you omit `--model`, `build.sh` presents an interactive list of supported WhisperX models and lets you choose one. To skip the prompt:
+   ```bash
+   ./build.sh --warm-model-cache-only --model large-v3 --model-cache-dir ./model-cache
+   ./build.sh --warm-model-cache-only --gpu --model turbo --model-cache-dir ./model-cache
+   ```
+
+   To print the currently supported model names:
+   ```bash
+   ./build.sh --list-models
+   ```
 
    To pre-download without rebuilding, start the container once with the cache mounted and let EchoNotes download the configured model at startup:
    ```bash
@@ -161,11 +177,26 @@ Versioned releases follow the same split:
      -v "$(pwd)/config:/app/config" \
      -v "$(pwd)/model-cache:/app/model-cache" \
      echonotes:latest \
-     python -c "import os, sys, torch, whisperx, yaml; sys.path.insert(0, '/app'); from main import get_default_whisper_model, whisperx_torch_load_compat; config = {}; config_path = '/app/config/config.yml'; \
-if os.path.exists(config_path): config = yaml.safe_load(open(config_path)) or {}; \
-device = 'cuda' if torch.cuda.is_available() else 'cpu'; compute_type = 'float16' if device == 'cuda' else 'int8'; model_name = config.get('whisper_model') or get_default_whisper_model(); \
-print(f'Warming WhisperX cache for model={model_name} device={device}'); \
-with whisperx_torch_load_compat(): whisperx.load_model(model_name, device, compute_type=compute_type)"
+     python -c 'exec("""
+import os
+import sys
+import torch
+import whisperx
+import yaml
+sys.path.insert(0, "/app")
+from main import get_default_whisper_model, whisperx_torch_load_compat
+config = {}
+config_path = "/app/config/config.yml"
+if os.path.exists(config_path):
+    with open(config_path, "r") as f:
+        config = yaml.safe_load(f) or {}
+device = "cuda" if torch.cuda.is_available() else "cpu"
+compute_type = "float16" if device == "cuda" else "int8"
+model_name = config.get("whisper_model") or get_default_whisper_model()
+print(f"Warming WhisperX cache for model={model_name} device={device}")
+with whisperx_torch_load_compat():
+    whisperx.load_model(model_name, device, compute_type=compute_type)
+""")'
    ```
 
    For GPU:
@@ -174,11 +205,26 @@ with whisperx_torch_load_compat(): whisperx.load_model(model_name, device, compu
      -v "$(pwd)/config:/app/config" \
      -v "$(pwd)/model-cache:/app/model-cache" \
      echonotes:latest-cuda12.8 \
-     python -c "import os, sys, torch, whisperx, yaml; sys.path.insert(0, '/app'); from main import get_default_whisper_model, whisperx_torch_load_compat; config = {}; config_path = '/app/config/config.yml'; \
-if os.path.exists(config_path): config = yaml.safe_load(open(config_path)) or {}; \
-device = 'cuda' if torch.cuda.is_available() else 'cpu'; compute_type = 'float16' if device == 'cuda' else 'int8'; model_name = config.get('whisper_model') or get_default_whisper_model(); \
-print(f'Warming WhisperX cache for model={model_name} device={device}'); \
-with whisperx_torch_load_compat(): whisperx.load_model(model_name, device, compute_type=compute_type)"
+     python -c 'exec("""
+import os
+import sys
+import torch
+import whisperx
+import yaml
+sys.path.insert(0, "/app")
+from main import get_default_whisper_model, whisperx_torch_load_compat
+config = {}
+config_path = "/app/config/config.yml"
+if os.path.exists(config_path):
+    with open(config_path, "r") as f:
+        config = yaml.safe_load(f) or {}
+device = "cuda" if torch.cuda.is_available() else "cpu"
+compute_type = "float16" if device == "cuda" else "int8"
+model_name = config.get("whisper_model") or get_default_whisper_model()
+print(f"Warming WhisperX cache for model={model_name} device={device}")
+with whisperx_torch_load_compat():
+    whisperx.load_model(model_name, device, compute_type=compute_type)
+""")'
    ```
 
    To override the PyTorch wheel source during build:
