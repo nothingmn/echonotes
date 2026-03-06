@@ -1,0 +1,22 @@
+llm:
+  provider: "ollama"
+  model: "qwen3:8b"
+  base_url: "http://172.19.32.1:11434/api"
+  api_key: ""
+  timeout_seconds: 120
+  max_tokens: 2048
+  temperature: 0.2
+
+whisper_model: "base"
+worker_count: 1
+format_transcripts: true
+transcript_format_prompt_path: "/app/format-transcript.md"
+summary_prompt_path: "/app/summarize-notes.md"
+vault_path: "/app/vault"
+obsidian_template_path: "/app/obsidian-template.md"
+
+chunking:
+  enabled: true
+  max_input_chars: 24000
+  target_chunk_chars: 16000
+  overlap_chars: 400

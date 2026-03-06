@@ -1,35 +1,101 @@
-Summarize the following meeting transcript, ensuring the output is structured in Markdown. Each section must be included in the output, even if there are no points under that section. 
+Summarize the following transcript as factual Markdown.
 
-## STEPS
-- Fully digest the content provided.
-- Extract all action items agreed within the meeting and owners.
-- Extract any interesting ideas brought up in the meeting.
+## Core Rule
 
+Use only information that is explicitly present in the transcript.
+Do not infer, embellish, generalize, or fill in missing details.
 
-## The summary should include:
+If a detail is not stated in the transcript, do not invent it.
 
-1. **Context:** Briefly describe the meeting's purpose and key participants.
-2. **Main Ideas:** Identify the core topics discussed and organize them by themes. Write a 15-word sentence that captures what's recommended for people to do based on each ideas discussed.
-3. **Decisions:** List any significant decisions made during the meeting. In bullet points, include all decisions made during the meeting, including the rationale behind each decision.
-4. **Action Items:** Provide detailed action items, including assigned responsibilities and deadlines. Write bullet points for ALL agreed actionable details. This includes and case where a speaker agrees to do, or look into something. If there is a deadline mentioned, include it here.
-5. **Recommendations:** Summarize any suggestions or advice given during the meeting.
-6. **Insights:** Include any notable observations or unexpected conclusions.
-7. **Challenges and Risks:** Identify and document any challenges or issues discussed during the meeting. Note any potential solutions or strategies proposed to address these challenges
-8. *Next Steps:*: Outline the next steps and action plan to be taken after the meeting
-9. **Minutes:** 20 to 50 bullet points, tracking the conversation, highlighting of the most surprising, insightful, and/or interesting ideas that come up. If there are less than 50 then collect all of them. Make sure you extract at least 20.
+Never invent:
+- participant names
+- speaker roles
+- decisions
+- action items
+- dates
+- deadlines
+- owners
+- recommendations
+- risks
+- next steps
 
+Never use placeholders such as:
+- `[Owner]`
+- `[Date]`
+- `[Deadline]`
+- `[Participants]`
 
+## Output Requirements
 
-## Output Instructions:
-- The summary must be in Markdown.
-- Each section header (e.g., Context, Main Ideas) must be present even if the section is empty.
-- Format the output clearly with bullet points or numbered lists as needed."
-- Do not give warnings or notes; only output the requested sections.
-- Do not repeat ideas, quotes, facts, or resources.
-- Do not start items with the same opening words.
-- Ensure you follow ALL these instructions when creating your output.
+Return Markdown with exactly these section headers in this order:
 
+## Context
+## Main Ideas
+## Decisions
+## Action Items
+## Recommendations
+## Insights
+## Challenges and Risks
+## Next Steps
+## Minutes
+
+Rules for each section:
+- If the transcript does not support a section, write exactly `None stated.`
+- Keep the wording concrete and close to the transcript.
+- Do not quote large passages unless necessary.
+- Do not repeat the same fact across multiple bullets unless required.
+
+## Section Guidance
+
+### Context
+- Write 1 to 2 sentences maximum.
+- Describe only what the transcript clearly is.
+
+### Main Ideas
+- List only actual themes or topics discussed.
+- If there are no real themes, write `None stated.`
+
+### Decisions
+- Include only explicit decisions.
+- If nothing was clearly decided, write `None stated.`
+
+### Action Items
+- Include only explicit commitments, assignments, or follow-ups.
+- If none are stated, write `None stated.`
+
+### Recommendations
+- Include only advice or recommendations explicitly spoken in the transcript.
+- If none are stated, write `None stated.`
+
+### Insights
+- Include only notable observations directly supported by the transcript.
+- If the transcript is too short or trivial, write `None stated.`
+
+### Challenges and Risks
+- Include only problems, blockers, concerns, or risks actually mentioned.
+- If none are stated, write `None stated.`
+
+### Next Steps
+- Include only explicit next steps.
+- If none are stated, write `None stated.`
+
+### Minutes
+- Use a short bullet list of factual points in transcript order.
+- One bullet per real point.
+- Do not force a minimum count.
+- For very short transcripts, 1 to 3 bullets is enough.
+
+## Special Case For Very Short Or Test-Like Transcripts
+
+If the transcript is extremely short, obviously a mic test, or contains no substantive meeting content:
+- say that directly in `Context`
+- set most sections to `None stated.`
+- keep `Minutes` minimal and factual
+
+## Final Rules
+
+- Output only the Markdown summary.
+- Do not add preambles or explanations.
+- Do not mention these instructions.
 
 # INPUT:
-
- 
