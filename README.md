@@ -78,18 +78,44 @@ docker run -d --name echonotes --init \
 
 The model cache mount is optional but recommended for local/dev use. If `/app/model-cache` is empty, EchoNotes downloads the configured WhisperX model at startup. If `whisper_model` is not configured, it defaults to `base` on CPU and `small` on GPU.
 
+Published image tags follow this pattern:
+- `echonotes:latest`: CPU image
+- `echonotes:latest-cuda12.8`: default GPU image
+- `echonotes:gpu`: alias for the default GPU image
+
+Versioned releases follow the same split:
+- `echonotes:1.4.1`
+- `echonotes:1.4.1-cuda12.8`
+
 ## Installation from source, via docker.
 
 ### Docker Setup
 
 1. **Build the Docker Image**:
 
-   Clone the repository and build the Docker image:
+   Clone the repository and build the CPU image:
    ```bash
    docker build -t echonotes .
    ```
 
-   The default Docker build uses the official PyTorch CPU wheel index so the CPU image does not pull the CUDA package set. A future GPU build can override `TORCH_EXTRA_INDEX_URL` with a CUDA wheel index.
+   The default Docker build is the CPU variant. It uses the official PyTorch CPU wheel path so the image does not pull the CUDA package set.
+
+   To build the GPU variant directly:
+   ```bash
+   docker build \
+     --build-arg IMAGE_VARIANT=gpu \
+     --build-arg GPU_BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04 \
+     --build-arg GPU_CUDA_DEVEL_IMAGE=nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04 \
+     --build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128 \
+     --build-arg TORCH_EXTRA_INDEX_URL= \
+     --build-arg TORCH_PACKAGE_SPEC=torch==2.8.0 \
+     --build-arg TORCHAUDIO_PACKAGE_SPEC=torchaudio==2.8.0 \
+     --build-arg TORCH_INSTALL_NO_DEPS=1 \
+     --build-arg TORCH_PYTHON_DEPS=filelock,fsspec,jinja2,markupsafe,mpmath,networkx,sympy,typing-extensions \
+     -t echonotes:latest-cuda12.8 .
+   ```
+
+   The GPU build uses a CUDA runtime image plus a CUDA devel stage that contributes the extra runtime libraries PyTorch expects, which keeps the image from duplicating the `nvidia-*` pip wheel bundle.
 
 2. **Run the Docker Container**:
 
@@ -110,14 +136,14 @@ The model cache mount is optional but recommended for local/dev use. If `/app/mo
    ./build.sh --model-cache-dir ./model-cache
    ```
 
+   To build the GPU image variant and warm the cache through the NVIDIA runtime:
+   ```bash
+   ./build.sh --gpu --model-cache-dir ./model-cache
+   ```
+
    To override the PyTorch wheel source during build:
    ```bash
    ./build.sh --torch-index-url https://download.pytorch.org/whl/cpu
-   ```
-
-   For a GPU-capable runtime:
-   ```bash
-   ./build.sh --gpu --model-cache-dir ./model-cache
    ```
 
 ### Docker Compose Example
@@ -143,6 +169,8 @@ Run the service with:
 ```bash
 docker-compose up -d
 ```
+
+For a GPU host, switch the image tag to `echonotes:gpu` or `echonotes:latest-cuda12.8` and add the appropriate GPU runtime settings for your Docker installation.
 
 ## Usage
 

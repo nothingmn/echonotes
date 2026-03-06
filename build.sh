@@ -2,25 +2,38 @@
 
 set -euo pipefail
 
-IMAGE_NAME="echonotes:latest"
+IMAGE_NAME=""
 MODEL_CACHE_DIR="$(pwd)/model-cache"
 CONFIG_DIR="$(pwd)/config"
 WARM_MODEL_CACHE=1
 NO_CACHE=0
-GPU_WARMUP=0
-TORCH_EXTRA_INDEX_URL="https://download.pytorch.org/whl/cpu"
+IMAGE_VARIANT="cpu"
+CUDA_TAG="cuda12.8"
+GPU_BASE_IMAGE="nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04"
+GPU_CUDA_DEVEL_IMAGE="nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04"
+TORCH_INDEX_URL=""
+TORCH_EXTRA_INDEX_URL=""
+TORCH_PACKAGE_SPEC=""
+TORCHAUDIO_PACKAGE_SPEC=""
+TORCH_INSTALL_NO_DEPS="0"
+TORCH_PYTHON_DEPS=""
 
 usage() {
     cat <<'EOF'
 Usage: ./build.sh [options]
 
 Options:
-  --image-name <name>        Docker image name to build (default: echonotes:latest)
+  --image-name <name>        Docker image name to build (default: echonotes:latest or echonotes:latest-cuda12.8)
   --config-dir <path>        Config directory for reading config.yml during warmup (default: ./config)
   --model-cache-dir <path>   Host model cache directory mounted to /app/model-cache (default: ./model-cache)
-  --gpu                      Warm the model cache with `--gpus all`
+  --variant <cpu|gpu>        Build the CPU or GPU image variant (default: cpu)
+  --gpu                      Shorthand for --variant gpu
+  --cuda-tag <tag>           CUDA tag suffix used in default image naming (default: cuda12.8)
+  --gpu-base-image <image>   Override the NVIDIA CUDA runtime image used for GPU builds
+  --gpu-devel-image <image>  Override the NVIDIA CUDA devel image used to source runtime libraries
   --no-cache                 Build the Docker image with --no-cache
-  --torch-index-url <url>    Override the PyTorch extra index used during docker build
+  --torch-index-url <url>    Override the primary PyTorch wheel index used during docker build
+  --torch-extra-index-url <url> Override the extra PyTorch wheel index used during docker build
   --skip-warm-model-cache    Build the image but skip model cache warmup
   --help                     Show this help
 EOF
@@ -40,15 +53,35 @@ while [[ $# -gt 0 ]]; do
             MODEL_CACHE_DIR="$2"
             shift 2
             ;;
+        --variant)
+            IMAGE_VARIANT="$2"
+            shift 2
+            ;;
         --gpu)
-            GPU_WARMUP=1
+            IMAGE_VARIANT="gpu"
             shift
+            ;;
+        --cuda-tag)
+            CUDA_TAG="$2"
+            shift 2
+            ;;
+        --gpu-base-image)
+            GPU_BASE_IMAGE="$2"
+            shift 2
+            ;;
+        --gpu-devel-image)
+            GPU_CUDA_DEVEL_IMAGE="$2"
+            shift 2
             ;;
         --no-cache)
             NO_CACHE=1
             shift
             ;;
         --torch-index-url)
+            TORCH_INDEX_URL="$2"
+            shift 2
+            ;;
+        --torch-extra-index-url)
             TORCH_EXTRA_INDEX_URL="$2"
             shift 2
             ;;
@@ -68,9 +101,53 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+if [[ "$IMAGE_VARIANT" != "cpu" && "$IMAGE_VARIANT" != "gpu" ]]; then
+    echo "Unsupported image variant: $IMAGE_VARIANT" >&2
+    usage
+    exit 1
+fi
+
+if [[ "$IMAGE_VARIANT" == "gpu" ]]; then
+    DEFAULT_IMAGE_NAME="echonotes:latest-$CUDA_TAG"
+    DEFAULT_TORCH_INDEX_URL="https://download.pytorch.org/whl/cu128"
+    DEFAULT_TORCH_EXTRA_INDEX_URL=""
+    DEFAULT_TORCH_PACKAGE_SPEC="torch==2.8.0"
+    DEFAULT_TORCHAUDIO_PACKAGE_SPEC="torchaudio==2.8.0"
+    DEFAULT_TORCH_INSTALL_NO_DEPS="1"
+    DEFAULT_TORCH_PYTHON_DEPS="filelock,fsspec,jinja2,markupsafe,mpmath,networkx,sympy,typing-extensions"
+else
+    DEFAULT_IMAGE_NAME="echonotes:latest"
+    DEFAULT_TORCH_INDEX_URL="https://pypi.org/simple"
+    DEFAULT_TORCH_EXTRA_INDEX_URL="https://download.pytorch.org/whl/cpu"
+    DEFAULT_TORCH_PACKAGE_SPEC="torch==2.8.0+cpu"
+    DEFAULT_TORCHAUDIO_PACKAGE_SPEC="torchaudio==2.8.0+cpu"
+    DEFAULT_TORCH_INSTALL_NO_DEPS="0"
+    DEFAULT_TORCH_PYTHON_DEPS=""
+fi
+
+IMAGE_NAME="${IMAGE_NAME:-$DEFAULT_IMAGE_NAME}"
+TORCH_INDEX_URL="${TORCH_INDEX_URL:-$DEFAULT_TORCH_INDEX_URL}"
+TORCH_EXTRA_INDEX_URL="${TORCH_EXTRA_INDEX_URL:-$DEFAULT_TORCH_EXTRA_INDEX_URL}"
+TORCH_PACKAGE_SPEC="${TORCH_PACKAGE_SPEC:-$DEFAULT_TORCH_PACKAGE_SPEC}"
+TORCHAUDIO_PACKAGE_SPEC="${TORCHAUDIO_PACKAGE_SPEC:-$DEFAULT_TORCHAUDIO_PACKAGE_SPEC}"
+TORCH_INSTALL_NO_DEPS="${TORCH_INSTALL_NO_DEPS:-$DEFAULT_TORCH_INSTALL_NO_DEPS}"
+TORCH_PYTHON_DEPS="${TORCH_PYTHON_DEPS:-$DEFAULT_TORCH_PYTHON_DEPS}"
+
 mkdir -p "$MODEL_CACHE_DIR"
 
-BUILD_CMD=(docker build --build-arg "TORCH_EXTRA_INDEX_URL=$TORCH_EXTRA_INDEX_URL" -t "$IMAGE_NAME")
+BUILD_CMD=(
+    docker build
+    --build-arg "IMAGE_VARIANT=$IMAGE_VARIANT"
+    --build-arg "GPU_BASE_IMAGE=$GPU_BASE_IMAGE"
+    --build-arg "GPU_CUDA_DEVEL_IMAGE=$GPU_CUDA_DEVEL_IMAGE"
+    --build-arg "TORCH_INDEX_URL=$TORCH_INDEX_URL"
+    --build-arg "TORCH_EXTRA_INDEX_URL=$TORCH_EXTRA_INDEX_URL"
+    --build-arg "TORCH_PACKAGE_SPEC=$TORCH_PACKAGE_SPEC"
+    --build-arg "TORCHAUDIO_PACKAGE_SPEC=$TORCHAUDIO_PACKAGE_SPEC"
+    --build-arg "TORCH_INSTALL_NO_DEPS=$TORCH_INSTALL_NO_DEPS"
+    --build-arg "TORCH_PYTHON_DEPS=$TORCH_PYTHON_DEPS"
+    -t "$IMAGE_NAME"
+)
 if [[ "$NO_CACHE" -eq 1 ]]; then
     BUILD_CMD+=(--no-cache)
 fi
@@ -92,7 +169,7 @@ fi
 echo "Model cache directory is empty; warming WhisperX cache..."
 
 RUN_CMD=(docker run --rm -v "$MODEL_CACHE_DIR:/app/model-cache")
-if [[ "$GPU_WARMUP" -eq 1 ]]; then
+if [[ "$IMAGE_VARIANT" == "gpu" ]]; then
     RUN_CMD+=(--gpus all)
 fi
 if [[ -d "$CONFIG_DIR" ]]; then
