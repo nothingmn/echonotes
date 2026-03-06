@@ -91,16 +91,20 @@ Versioned releases follow the same split:
 
 ### Docker Setup
 
-1. **Build the Docker Image**:
+1. **Build the Docker Images**:
 
-   Clone the repository and build the CPU image:
+   EchoNotes currently supports two local build variants:
+   - CPU: `echonotes:latest`
+   - GPU: `echonotes:latest-cuda12.8`
+
+   Build the CPU image:
    ```bash
-   docker build -t echonotes .
+   docker build -t echonotes:latest .
    ```
 
    The default Docker build is the CPU variant. It uses the official PyTorch CPU wheel path so the image does not pull the CUDA package set.
 
-   To build the GPU variant directly:
+   Build the GPU image:
    ```bash
    docker build \
      --build-arg IMAGE_VARIANT=gpu \
@@ -113,6 +117,13 @@ Versioned releases follow the same split:
      --build-arg TORCH_PYTHON_DEPS=filelock,fsspec,jinja2,markupsafe,mpmath,networkx,sympy,typing-extensions \
      -t echonotes:latest-cuda12.8 .
    ```
+
+   Optional local alias for the GPU image:
+   ```bash
+   docker tag echonotes:latest-cuda12.8 echonotes:gpu
+   ```
+
+   If you want both local variants available in one pass, run both commands above.
 
    The GPU build uses the NVIDIA CUDA runtime image directly and keeps only the extra CUDA libraries that PyTorch still needs beyond that base, which avoids duplicating the full `nvidia-*` pip wheel bundle.
 
@@ -128,16 +139,46 @@ Versioned releases follow the same split:
      echonotes:latest
    ```
 
-3. **Optional Local Model Cache Warmup**:
+3. **Pre-download WhisperX Models**:
 
-   Use the helper script to build the image and warm a local model cache only when the cache directory is empty:
+   The recommended way to pre-download WhisperX models is to mount a host cache directory to `/app/model-cache` and warm it before your first long run.
+
+   Build the CPU image and warm an empty local cache:
    ```bash
    ./build.sh --model-cache-dir ./model-cache
    ```
 
-   To build the GPU image variant and warm the cache through the NVIDIA runtime:
+   Build the GPU image and warm an empty local cache through the NVIDIA runtime:
    ```bash
    ./build.sh --gpu --model-cache-dir ./model-cache
+   ```
+
+   `build.sh` only warms the cache if the target cache directory is empty. If the cache already contains model files, it skips the warmup step.
+
+   To pre-download without rebuilding, start the container once with the cache mounted and let EchoNotes download the configured model at startup:
+   ```bash
+   docker run --rm \
+     -v "$(pwd)/config:/app/config" \
+     -v "$(pwd)/model-cache:/app/model-cache" \
+     echonotes:latest \
+     python -c "import os, sys, torch, whisperx, yaml; sys.path.insert(0, '/app'); from main import get_default_whisper_model, whisperx_torch_load_compat; config = {}; config_path = '/app/config/config.yml'; \
+if os.path.exists(config_path): config = yaml.safe_load(open(config_path)) or {}; \
+device = 'cuda' if torch.cuda.is_available() else 'cpu'; compute_type = 'float16' if device == 'cuda' else 'int8'; model_name = config.get('whisper_model') or get_default_whisper_model(); \
+print(f'Warming WhisperX cache for model={model_name} device={device}'); \
+with whisperx_torch_load_compat(): whisperx.load_model(model_name, device, compute_type=compute_type)"
+   ```
+
+   For GPU:
+   ```bash
+   docker run --rm --gpus all \
+     -v "$(pwd)/config:/app/config" \
+     -v "$(pwd)/model-cache:/app/model-cache" \
+     echonotes:latest-cuda12.8 \
+     python -c "import os, sys, torch, whisperx, yaml; sys.path.insert(0, '/app'); from main import get_default_whisper_model, whisperx_torch_load_compat; config = {}; config_path = '/app/config/config.yml'; \
+if os.path.exists(config_path): config = yaml.safe_load(open(config_path)) or {}; \
+device = 'cuda' if torch.cuda.is_available() else 'cpu'; compute_type = 'float16' if device == 'cuda' else 'int8'; model_name = config.get('whisper_model') or get_default_whisper_model(); \
+print(f'Warming WhisperX cache for model={model_name} device={device}'); \
+with whisperx_torch_load_compat(): whisperx.load_model(model_name, device, compute_type=compute_type)"
    ```
 
    To override the PyTorch wheel source during build:
