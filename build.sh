@@ -8,6 +8,7 @@ CONFIG_DIR="$(pwd)/config"
 WARM_MODEL_CACHE=1
 NO_CACHE=0
 GPU_WARMUP=0
+TORCH_EXTRA_INDEX_URL="https://download.pytorch.org/whl/cpu"
 
 usage() {
     cat <<'EOF'
@@ -19,6 +20,7 @@ Options:
   --model-cache-dir <path>   Host model cache directory mounted to /app/model-cache (default: ./model-cache)
   --gpu                      Warm the model cache with `--gpus all`
   --no-cache                 Build the Docker image with --no-cache
+  --torch-index-url <url>    Override the PyTorch extra index used during docker build
   --skip-warm-model-cache    Build the image but skip model cache warmup
   --help                     Show this help
 EOF
@@ -46,6 +48,10 @@ while [[ $# -gt 0 ]]; do
             NO_CACHE=1
             shift
             ;;
+        --torch-index-url)
+            TORCH_EXTRA_INDEX_URL="$2"
+            shift 2
+            ;;
         --skip-warm-model-cache)
             WARM_MODEL_CACHE=0
             shift
@@ -64,7 +70,7 @@ done
 
 mkdir -p "$MODEL_CACHE_DIR"
 
-BUILD_CMD=(docker build -t "$IMAGE_NAME")
+BUILD_CMD=(docker build --build-arg "TORCH_EXTRA_INDEX_URL=$TORCH_EXTRA_INDEX_URL" -t "$IMAGE_NAME")
 if [[ "$NO_CACHE" -eq 1 ]]; then
     BUILD_CMD+=(--no-cache)
 fi

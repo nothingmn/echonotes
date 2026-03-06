@@ -89,6 +89,8 @@ The model cache mount is optional but recommended for local/dev use. If `/app/mo
    docker build -t echonotes .
    ```
 
+   The default Docker build uses the official PyTorch CPU wheel index so the CPU image does not pull the CUDA package set. A future GPU build can override `TORCH_EXTRA_INDEX_URL` with a CUDA wheel index.
+
 2. **Run the Docker Container**:
 
    Run the long-lived worker container with the three runtime mounts:
@@ -106,6 +108,11 @@ The model cache mount is optional but recommended for local/dev use. If `/app/mo
    Use the helper script to build the image and warm a local model cache only when the cache directory is empty:
    ```bash
    ./build.sh --model-cache-dir ./model-cache
+   ```
+
+   To override the PyTorch wheel source during build:
+   ```bash
+   ./build.sh --torch-index-url https://download.pytorch.org/whl/cpu
    ```
 
    For a GPU-capable runtime:
