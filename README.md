@@ -47,7 +47,7 @@ EchoNotes is a Python-based application that monitors a folder for new files, ex
 Create a config directory and place your runtime files there:
 
 ```bash
-mkdir -p config incoming vault
+mkdir -p config incoming vault model-cache
 cp config.sample.yml config/config.yml
 cp summarize-notes.md config/summarize-notes.md
 ```
@@ -61,6 +61,7 @@ docker run -d --name echonotes --init \
   -v /path/to/incoming:/app/incoming \
   -v /path/to/vault:/app/vault \
   -v /path/to/config:/app/config \
+  -v /path/to/model-cache:/app/model-cache \
   echonotes:latest
 ```
 
@@ -71,8 +72,11 @@ docker run -d --name echonotes --init \
   -v "$(pwd)/incoming:/app/incoming" \
   -v "$(pwd)/vault:/app/vault" \
   -v "$(pwd)/config:/app/config" \
+  -v "$(pwd)/model-cache:/app/model-cache" \
   echonotes:latest
 ```
+
+The model cache mount is optional but recommended for local/dev use. If `/app/model-cache` is empty, EchoNotes downloads the configured WhisperX model at startup. If `whisper_model` is not configured, it defaults to `base` on CPU and `small` on GPU.
 
 ## Installation from source, via docker.
 
@@ -93,14 +97,20 @@ docker run -d --name echonotes --init \
      -v /path/to/incoming:/app/incoming \
      -v /path/to/vault:/app/vault \
      -v /path/to/config:/app/config \
+     -v /path/to/model-cache:/app/model-cache \
      echonotes:latest
    ```
 
-3. **Pre-Download WhisperX Models (Optional)**:
+3. **Optional Local Model Cache Warmup**:
 
-   The WhisperX ASR models are automatically downloaded, but you can pre-download them by running:
+   Use the helper script to build the image and warm a local model cache only when the cache directory is empty:
    ```bash
-   docker exec -it <container_id> python -c "import whisperx; whisperx.load_model('base', 'cpu', compute_type='int8')"
+   ./build.sh --model-cache-dir ./model-cache
+   ```
+
+   For a GPU-capable runtime:
+   ```bash
+   ./build.sh --gpu --model-cache-dir ./model-cache
    ```
 
 ### Docker Compose Example
@@ -117,6 +127,7 @@ services:
       - ./incoming:/app/incoming
       - ./vault:/app/vault
       - ./config:/app/config
+      - ./model-cache:/app/model-cache
     restart: unless-stopped
 ```
 
@@ -155,7 +166,7 @@ llm:
   timeout_seconds: null
   max_tokens: 2048
 
-whisper_model: "base" # Specify the WhisperX ASR model to use ('tiny', 'base', 'small', 'medium', 'large')
+whisper_model: "base" # Optional; defaults to 'base' on CPU and 'small' on GPU when omitted
 worker_count: 2 # Number of background workers to run concurrently; on GPU start with 1
 diarization_enabled: true # Enable WhisperX speaker diarization when configured
 diarization_hf_token: "" # Required for speaker labels via pyannote diarization
@@ -183,6 +194,8 @@ Put your custom runtime files in the mounted `/app/config` directory:
 - `summarize-notes.md`
 - `format-transcript.md`
 - `obsidian-template.md`
+
+If you mount `/app/model-cache`, WhisperX downloads are reused across container rebuilds and restarts. This is especially useful for local/dev Docker workflows.
 
 The summarization prompt (`summarize-notes.md`) is used to prepend instructions for summaries. If you want to customize transcript formatting, place `format-transcript.md` in the same config directory and point `transcript_format_prompt_path` at it. If no transcript-format prompt exists there, EchoNotes uses a built-in transcript-formatting prompt.
 
@@ -225,6 +238,7 @@ The application logs all activities and errors to help with debugging and tracki
 - **completed**: Once processed, files and generated artifacts are moved under `incoming/completed`.
 - **vault**: Output mount where final MP3, transcript, summary, and Obsidian note are copied.
 - **config**: Mounted runtime config directory for `config.yml` and prompt/template overrides.
+- **model-cache**: Optional mounted cache directory for WhisperX, Hugging Face, and related model downloads.
 
 ## Contributing
 

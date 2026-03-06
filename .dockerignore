@@ -6,5 +6,6 @@ Testing/
 incoming/
 vault/
 config/
+model-cache/
 *.log
 .env*

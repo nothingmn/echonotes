@@ -1,80 +1,112 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-# Default image name
+set -euo pipefail
+
 IMAGE_NAME="echonotes:latest"
+CONTAINER_NAME="echonotes"
+DETACH=1
+GPU=0
+MODEL_CACHE_DIR=""
 
-# Usage information
 usage() {
-    echo "Usage: ./run.sh [--image-name <docker_image_name>] --incoming <incoming_folder> --config <config_file> --prompt <markdown_file>"
-    echo "  --image-name: Optional, Docker image name (default: echonotes:latest)"
-    echo "  --incoming: Required, path to the folder where PDFs will be monitored"
-    echo "  --config: Required, path to the config.yml file"
-    echo "  --prompt: Required, path to the markdown prompt file"
-    exit 1
+    cat <<'EOF'
+Usage: ./run.sh [options] --incoming <folder> --vault <folder> --config-dir <folder>
+
+Options:
+  --image-name <name>        Docker image name to run (default: echonotes:latest)
+  --container-name <name>    Docker container name (default: echonotes)
+  --incoming <folder>        Host folder mounted to /app/incoming
+  --vault <folder>           Host folder mounted to /app/vault
+  --config-dir <folder>      Host folder mounted to /app/config
+  --model-cache-dir <folder> Optional host folder mounted to /app/model-cache
+  --gpu                      Run with --gpus all
+  --foreground               Run attached instead of detached
+  --help                     Show this help
+EOF
 }
 
-# Function to validate that required arguments are provided
-validate_args() {
-    if [[ -z "$INCOMING_FOLDER" || -z "$CONFIG_FILE" || -z "$PROMPT_FILE" ]]; then
-        echo "Error: Missing required arguments."
-        usage
-    fi
-
-    if [[ ! -d "$INCOMING_FOLDER" ]]; then
-        echo "Error: Incoming folder '$INCOMING_FOLDER' does not exist."
-        exit 1
-    fi
-
-    if [[ ! -f "$CONFIG_FILE" ]]; then
-        echo "Error: Config file '$CONFIG_FILE' does not exist."
-        exit 1
-    fi
-
-    if [[ ! -f "$PROMPT_FILE" ]]; then
-        echo "Error: Prompt file '$PROMPT_FILE' does not exist."
-        exit 1
-    fi
-}
-
-# Parse named arguments
-while [[ "$#" -gt 0 ]]; do
-    case $1 in
+while [[ $# -gt 0 ]]; do
+    case "$1" in
         --image-name)
             IMAGE_NAME="$2"
             shift 2
             ;;
+        --container-name)
+            CONTAINER_NAME="$2"
+            shift 2
+            ;;
         --incoming)
-            INCOMING_FOLDER="$2"
+            INCOMING_DIR="$2"
             shift 2
             ;;
-        --config)
-            CONFIG_FILE="$2"
+        --vault)
+            VAULT_DIR="$2"
             shift 2
             ;;
-        --prompt)
-            PROMPT_FILE="$2"
+        --config-dir)
+            CONFIG_DIR="$2"
             shift 2
+            ;;
+        --model-cache-dir)
+            MODEL_CACHE_DIR="$2"
+            shift 2
+            ;;
+        --gpu)
+            GPU=1
+            shift
+            ;;
+        --foreground)
+            DETACH=0
+            shift
+            ;;
+        --help|-h)
+            usage
+            exit 0
             ;;
         *)
-            echo "Error: Invalid argument '$1'"
+            echo "Unknown argument: $1" >&2
             usage
+            exit 1
             ;;
     esac
 done
 
-# Validate required arguments
-validate_args
+if [[ -z "${INCOMING_DIR:-}" || -z "${VAULT_DIR:-}" || -z "${CONFIG_DIR:-}" ]]; then
+    echo "Missing required arguments." >&2
+    usage
+    exit 1
+fi
 
-# clean up past runs
- sudo rm -rf incoming/completed incoming/working incoming/* -R
+for dir_var in INCOMING_DIR VAULT_DIR CONFIG_DIR; do
+    dir_path="${!dir_var}"
+    if [[ ! -d "$dir_path" ]]; then
+        echo "Directory does not exist: $dir_path" >&2
+        exit 1
+    fi
+done
 
-# Build the Docker image
-echo "Building Docker image $IMAGE_NAME..."
-docker build --no-cache -t "$IMAGE_NAME" .
+RUN_CMD=(docker run --init --name "$CONTAINER_NAME")
+if [[ "$DETACH" -eq 1 ]]; then
+    RUN_CMD+=(-d)
+else
+    RUN_CMD+=(--rm)
+fi
+if [[ "$GPU" -eq 1 ]]; then
+    RUN_CMD+=(--gpus all)
+fi
 
-# Run the Docker container
-echo "Running Docker container..."
-docker run --rm -v "$INCOMING_FOLDER:/app/incoming" \
-           -v "$CONFIG_FILE:/app/config.yml" \
-           -v "$PROMPT_FILE:/app/summarize-notes.md" \
-           "$IMAGE_NAME"
+RUN_CMD+=(
+    -v "$INCOMING_DIR:/app/incoming"
+    -v "$VAULT_DIR:/app/vault"
+    -v "$CONFIG_DIR:/app/config"
+)
+
+if [[ -n "$MODEL_CACHE_DIR" ]]; then
+    mkdir -p "$MODEL_CACHE_DIR"
+    RUN_CMD+=(-v "$MODEL_CACHE_DIR:/app/model-cache")
+fi
+
+RUN_CMD+=("$IMAGE_NAME")
+
+echo "Running Docker container $CONTAINER_NAME..."
+"${RUN_CMD[@]}"

@@ -144,6 +144,18 @@ def get_worker_count(config):
     return max(1, min(4, os.cpu_count() or 1))
 
 
+def get_default_whisper_model():
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            return "small"
+    except Exception:
+        pass
+
+    return "base"
+
+
 def get_llm_settings(config):
     llm_settings = config.get("llm")
     if isinstance(llm_settings, dict):
@@ -1518,7 +1530,7 @@ if __name__ == "__main__":
 
         # Load configuration
         config = load_config()
-        whisper_model = config['whisper_model'] if 'whisper_model' in config and config['whisper_model'] else 'base'
+        whisper_model = config['whisper_model'] if 'whisper_model' in config and config['whisper_model'] else get_default_whisper_model()
         worker_count = get_worker_count(config)
         logging.info(f"Starting worker pool with {worker_count} worker(s)")
 

@@ -12,7 +12,7 @@ llm:
   site_url: ""  # optional, used by openrouter
   site_name: ""  # optional, used by openrouter
 
-whisper_model: "tiny"  # see the Dockerfile; WhisperX ASR models preloaded during build are tiny, base, and small
+whisper_model: "tiny"  # optional; if omitted EchoNotes defaults to "base" on CPU and "small" on GPU
 worker_count: 2  # number of background processing workers; on GPU, 1 is usually the safe default
 diarization_enabled: true  # enable WhisperX speaker diarization when a Hugging Face token is configured
 diarization_hf_token: ""  # required for speaker labels via pyannote/WhisperX diarization
