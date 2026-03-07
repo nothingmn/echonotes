@@ -61,6 +61,7 @@ DEFAULT_LLM_TIMEOUT_SECONDS = 120
 DEFAULT_CHUNK_MAX_INPUT_CHARS = 24000
 DEFAULT_CHUNK_TARGET_CHARS = 16000
 DEFAULT_CHUNK_OVERLAP_CHARS = 400
+DEFAULT_INCOMING_RESCAN_INTERVAL_SECONDS = 5
 TORCH_LOAD_PATCH_LOCK = threading.Lock()
 DEFAULT_TRANSCRIPT_FORMAT_PROMPT = """Rewrite the following raw transcript as clean, readable Markdown.
 
@@ -536,6 +537,13 @@ def get_vault_path(config):
 
 def get_watch_path(config):
     return config.get("path_to_watch", DEFAULT_INCOMING_PATH)
+
+
+def get_incoming_rescan_interval_seconds(config):
+    configured_interval = config.get("incoming_rescan_interval_seconds")
+    if configured_interval in (None, ""):
+        return DEFAULT_INCOMING_RESCAN_INTERVAL_SECONDS
+    return max(0, int(configured_interval))
 
 
 def render_template(template, context):
@@ -1381,10 +1389,21 @@ class FileProcessor:
 
 
 class ProcessingWorker(threading.Thread):
-    def __init__(self, worker_id, job_queue, config, working_folder, completed_folder, vault_folder, whisper_model):
+    def __init__(
+        self,
+        worker_id,
+        job_queue,
+        pending_jobs,
+        config,
+        working_folder,
+        completed_folder,
+        vault_folder,
+        whisper_model,
+    ):
         super().__init__(daemon=True, name=f"worker-{worker_id}")
         self.worker_id = worker_id
         self.job_queue = job_queue
+        self.pending_jobs = pending_jobs
         self.config = config
         self.working_folder = working_folder
         self.completed_folder = completed_folder
@@ -1422,15 +1441,45 @@ class ProcessingWorker(threading.Thread):
             except Exception:
                 logging.exception(f"Worker failed for job: {job}")
             finally:
+                if job is not None:
+                    self.pending_jobs.release(job)
                 self.job_queue.task_done()
 
 
+class PendingJobRegistry:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._pending_jobs = set()
+
+    def claim(self, file_path):
+        with self._lock:
+            if file_path in self._pending_jobs:
+                return False
+            self._pending_jobs.add(file_path)
+            return True
+
+    def release(self, file_path):
+        with self._lock:
+            self._pending_jobs.discard(file_path)
+
+
 class WorkerPool:
-    def __init__(self, worker_count, job_queue, config, working_folder, completed_folder, vault_folder, whisper_model):
+    def __init__(
+        self,
+        worker_count,
+        job_queue,
+        pending_jobs,
+        config,
+        working_folder,
+        completed_folder,
+        vault_folder,
+        whisper_model,
+    ):
         self.workers = [
             ProcessingWorker(
                 worker_id=index + 1,
                 job_queue=job_queue,
+                pending_jobs=pending_jobs,
                 config=config,
                 working_folder=working_folder,
                 completed_folder=completed_folder,
@@ -1462,8 +1511,9 @@ def format_markdown(api_response):
     
 # Event handler for newly created files
 class FileHandler(FileSystemEventHandler):
-    def __init__(self, job_queue, path_to_watch):
+    def __init__(self, job_queue, pending_jobs, path_to_watch):
         self.job_queue = job_queue
+        self.pending_jobs = pending_jobs
         self.path_to_watch = path_to_watch
 
     def _should_ignore_path(self, file_path):
@@ -1487,6 +1537,9 @@ class FileHandler(FileSystemEventHandler):
             return
 
         if self._should_ignore_path(file_path):
+            return
+
+        if not self.pending_jobs.claim(file_path):
             return
 
         self.job_queue.put(file_path)
@@ -1523,7 +1576,29 @@ class FileHandler(FileSystemEventHandler):
         except Exception as e:
             logging.error(f"Error queueing moved file {event.dest_path}: {e}")
 
-        
+
+class IncomingRescanLoop(threading.Thread):
+    def __init__(self, file_handler, interval_seconds):
+        super().__init__(daemon=True, name="incoming-rescan")
+        self.file_handler = file_handler
+        self.interval_seconds = interval_seconds
+        self.stop_event = threading.Event()
+
+    def stop(self):
+        self.stop_event.set()
+
+    def run(self):
+        if self.interval_seconds <= 0:
+            logging.info("Periodic incoming rescan disabled")
+            return
+
+        logging.info(
+            f"Starting periodic incoming rescan loop (interval={self.interval_seconds}s)"
+        )
+
+        while not self.stop_event.wait(self.interval_seconds):
+            self.file_handler.queue_existing_files()
+
 
 
 def show_ascii_art():
@@ -1554,9 +1629,11 @@ if __name__ == "__main__":
         vault_folder = ensure_folder(get_vault_path(config))
 
         job_queue = queue.Queue()
+        pending_jobs = PendingJobRegistry()
         worker_pool = WorkerPool(
             worker_count,
             job_queue,
+            pending_jobs,
             config,
             working_folder,
             completed_folder,
@@ -1564,11 +1641,16 @@ if __name__ == "__main__":
             whisper_model,
         )
 
-        event_handler = FileHandler(job_queue, path_to_watch)
+        event_handler = FileHandler(job_queue, pending_jobs, path_to_watch)
+        rescan_loop = IncomingRescanLoop(
+            event_handler,
+            get_incoming_rescan_interval_seconds(config),
+        )
         observer = Observer()
         observer.schedule(event_handler, path=path_to_watch, recursive=False)
         observer.start()
         event_handler.queue_existing_files()
+        rescan_loop.start()
         worker_pool.start()
 
         try:
@@ -1576,8 +1658,10 @@ if __name__ == "__main__":
                 time.sleep(1)
         except KeyboardInterrupt:
             observer.stop()
+            rescan_loop.stop()
             worker_pool.stop()
         observer.join()
+        rescan_loop.join()
         worker_pool.join()
 
     except Exception as e:

@@ -39,6 +39,7 @@ EchoNotes is a Python-based application that monitors a folder for new files, ex
 - **Ingestion Hardening**:
   - Partial-copy files are held until their size stabilizes.
   - Temporary files and hidden dot-paths such as `.obsidian` and `.stfolder` are ignored.
+  - A periodic fallback rescan picks up files that arrive on mounted folders where filesystem events are unreliable, such as Syncthing or Windows-backed binds.
 
 ## Requirements
 
@@ -247,6 +248,7 @@ The application is configured via `/app/config/config.yml`. The image also inclu
 
 ```yaml
 path_to_watch: "/app/incoming"
+incoming_rescan_interval_seconds: 5 # Periodic fallback scan for missed filesystem events; set 0 to disable
 
 llm:
   provider: "openwebui"
