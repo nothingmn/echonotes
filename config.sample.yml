@@ -28,6 +28,7 @@ format_transcripts: true  # format audio/video transcripts into readable markdow
 transcript_format_prompt_path: "/app/config/format-transcript.md"  # optional; built-in prompt is used if this file does not exist
 summary_prompt_path: "/app/config/summarize-notes.md"  # optional; falls back to /app/config-defaults/summarize-notes.md
 vault_path: "/app/vault"  # folder inside your Obsidian vault where audio artifacts and notes are copied
+obsidian_extract_prompt_path: "/app/config/obsidian-extract.md"  # optional; falls back to /app/config-defaults/obsidian-extract.md
 obsidian_template_path: "/app/config/obsidian-template.md"  # optional; defaults to a template next to summarize-notes.md or a built-in plain template
 
 chunking:

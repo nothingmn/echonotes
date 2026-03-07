@@ -34,7 +34,8 @@ EchoNotes is a Python-based application that monitors a folder for new files, ex
   - Large transcripts are chunked and reduced automatically so long meetings do not overflow model context windows.
 - **Obsidian Export**:
   - Audio/video jobs can copy the final MP3, transcript, summary, and an Obsidian note into `vault/`.
-  - The Obsidian note template is loaded from the same area as the summarization prompt, with a built-in fallback.
+  - The Obsidian note now includes structured front matter, linked entities, and deterministic sections rendered by Python.
+  - The Obsidian note template and extraction prompt are loaded from the config area, with image-shipped fallbacks.
 - **Logging**: Extensive logging to help track operations and errors.
 - **Ingestion Hardening**:
   - Partial-copy files are held until their size stabilizes.
@@ -242,6 +243,41 @@ Once the text is extracted, it can be summarized by sending the text and a custo
 
 Files placed in hidden folders or dot-paths such as `.obsidian`, `.stfolder`, or `.syncthing*` are ignored. Temporary partial-download files such as `.part`, `.tmp`, and `.crdownload` are also ignored.
 
+### Pipeline Overview
+
+**Audio**
+- Detect supported audio file in incoming folder
+- Wait until file size becomes stable
+- Move file into working folder
+- Convert to MP3 if needed
+- Transcribe with WhisperX
+- Align timestamps and diarize speakers
+- Format transcript with LLM if configured
+- Generate summary with LLM if configured
+- Create Obsidian note and copy vault artifacts
+- Move originals and outputs to completed
+
+**Video**
+- Detect supported video file in incoming folder
+- Wait until file size becomes stable
+- Move file into working folder
+- Extract audio to MP3 with FFmpeg
+- Transcribe with WhisperX
+- Align timestamps and diarize speakers
+- Format transcript with LLM if configured
+- Generate summary with LLM if configured
+- Create Obsidian note and copy vault artifacts
+- Move originals and outputs to completed
+
+**Documents**
+- Detect supported document file in incoming folder
+- Wait until file size becomes stable
+- Move file into working folder
+- Extract text from PDF, DOCX, or TXT
+- Use OCR fallback for image PDFs
+- Generate summary with LLM if configured
+- Move originals and outputs to completed
+
 ## Configuration
 
 The application is configured via `/app/config/config.yml`. The image also includes baked defaults in `/app/config-defaults`, so if a prompt file is missing from the mounted config directory EchoNotes falls back to the image default where available. An example configuration file is shown below:
@@ -273,6 +309,7 @@ format_transcripts: true # Format audio/video transcripts into readable Markdown
 transcript_format_prompt_path: "/app/config/format-transcript.md" # Optional; built-in prompt is used if missing
 summary_prompt_path: "/app/config/summarize-notes.md" # Optional; falls back to /app/config-defaults/summarize-notes.md
 vault_path: "/app/vault" # Folder where Obsidian-ready artifacts are copied
+obsidian_extract_prompt_path: "/app/config/obsidian-extract.md" # Optional; falls back to /app/config-defaults/obsidian-extract.md
 obsidian_template_path: "/app/config/obsidian-template.md" # Optional; defaults next to summarize-notes.md or a built-in template
 
 chunking:
@@ -288,11 +325,14 @@ Put your custom runtime files in the mounted `/app/config` directory:
 - `config.yml`
 - `summarize-notes.md`
 - `format-transcript.md`
+- `obsidian-extract.md`
 - `obsidian-template.md`
 
 If you mount `/app/model-cache`, WhisperX downloads are reused across container rebuilds and restarts. This is especially useful for local/dev Docker workflows.
 
 The summarization prompt (`summarize-notes.md`) is used to prepend instructions for summaries. If you want to customize transcript formatting, place `format-transcript.md` in the same config directory and point `transcript_format_prompt_path` at it. If no transcript-format prompt exists there, EchoNotes uses a built-in transcript-formatting prompt.
+
+For Obsidian note enrichment, `obsidian-extract.md` instructs the LLM to return structured JSON for front matter and note sections. Python then renders the final note deterministically from that JSON.
 
 If you mount an Obsidian vault folder at `vault_path`, EchoNotes also copies audio-ready artifacts there for audio and video jobs:
 - The final MP3
@@ -300,7 +340,13 @@ If you mount an Obsidian vault folder at `vault_path`, EchoNotes also copies aud
 - The summary markdown
 - An Obsidian note markdown file
 
-If `obsidian_template_path` is not provided, EchoNotes looks for `obsidian-template.md` next to the summarization prompt. If that file is missing, it uses a built-in plain template.
+If `obsidian_template_path` is not provided, EchoNotes looks for `obsidian-template.md` next to the summarization prompt. The image now ships a default `obsidian-template.md` in `/app/config-defaults`, and if that file is unavailable EchoNotes falls back to the built-in plain template.
+
+Structured Obsidian notes can include:
+- front matter fields such as `detected_language`, `inferred_people`, `inferred_projects`, and `inferred_topics`
+- deterministic tags such as `echonotes`, `audio` or `video`, `transcript`, `summary`, and `diarized`
+- linked entity sections like `[[People/Rob]]`, `[[Projects/Vancity]]`, and `[[Topics/Financial Planning]]`
+- deterministic sections for main ideas, decisions, action items, challenges and risks, and next steps
 
 For speaker labels in audio/video transcripts, configure `diarization_hf_token`. When diarization is available, EchoNotes writes labels like `Speaker 1` and `Speaker 2` into the timestamped transcript lines.
 

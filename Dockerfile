@@ -93,6 +93,8 @@ RUN mkdir -p /app/config-defaults /app/incoming /app/vault /app/config /app/mode
 COPY main.py README.md /app/
 COPY config.sample.yml /app/config-defaults/config.yml
 COPY summarize-notes.md /app/config-defaults/summarize-notes.md
+COPY obsidian-extract.md /app/config-defaults/obsidian-extract.md
+COPY obsidian-template.md /app/config-defaults/obsidian-template.md
 
 VOLUME ["/app/incoming", "/app/vault", "/app/config", "/app/model-cache"]
 

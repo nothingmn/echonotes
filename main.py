@@ -56,6 +56,9 @@ DEFAULT_SUMMARY_PROMPT_PATH = f"{DEFAULT_CONFIG_DIR}/{DEFAULT_SUMMARY_PROMPT_NAM
 DEFAULT_SUMMARY_PROMPT_FALLBACK_PATH = f"{DEFAULT_CONFIG_DEFAULTS_DIR}/{DEFAULT_SUMMARY_PROMPT_NAME}"
 DEFAULT_TRANSCRIPT_FORMAT_PROMPT_NAME = "format-transcript.md"
 DEFAULT_TRANSCRIPT_FORMAT_PROMPT_PATH = f"{DEFAULT_CONFIG_DIR}/{DEFAULT_TRANSCRIPT_FORMAT_PROMPT_NAME}"
+DEFAULT_OBSIDIAN_EXTRACT_PROMPT_NAME = "obsidian-extract.md"
+DEFAULT_OBSIDIAN_EXTRACT_PROMPT_PATH = f"{DEFAULT_CONFIG_DIR}/{DEFAULT_OBSIDIAN_EXTRACT_PROMPT_NAME}"
+DEFAULT_OBSIDIAN_EXTRACT_PROMPT_FALLBACK_PATH = f"{DEFAULT_CONFIG_DEFAULTS_DIR}/{DEFAULT_OBSIDIAN_EXTRACT_PROMPT_NAME}"
 DEFAULT_OBSIDIAN_TEMPLATE_NAME = "obsidian-template.md"
 DEFAULT_OBSIDIAN_TEMPLATE_PATH = f"{DEFAULT_CONFIG_DIR}/{DEFAULT_OBSIDIAN_TEMPLATE_NAME}"
 DEFAULT_LLM_TIMEOUT_SECONDS = 120
@@ -83,11 +86,7 @@ DEFAULT_TRANSCRIPT_FORMAT_PROMPT = """Rewrite the following raw transcript as cl
 - Do not add commentary, warnings, or analysis.
 - Do not invent speaker names.
 """
-DEFAULT_OBSIDIAN_TEMPLATE = """---
-type: audio-note
-created: {{created}}
-source: EchoNotes
----
+DEFAULT_OBSIDIAN_TEMPLATE = """{{frontmatter}}
 
 # {{title}}
 
@@ -100,13 +99,70 @@ source: EchoNotes
 - Transcript: [[{{transcript_filename}}]]
 {{summary_file_line}}
 
+## Linked Entities
+
+{{entity_links_section}}
+
 ## Summary
 
 {{summary_content}}
 
+## Context
+
+{{context_section}}
+
+## Main Ideas
+
+{{main_ideas_section}}
+
+## Decisions
+
+{{decisions_section}}
+
+## Action Items
+
+{{action_items_section}}
+
+## Challenges and Risks
+
+{{challenges_and_risks_section}}
+
+## Next Steps
+
+{{next_steps_section}}
+
 ## Transcript
 
 {{transcript_body}}
+"""
+DEFAULT_OBSIDIAN_EXTRACT_PROMPT = """Extract structured Obsidian note data from the following transcript or summary.
+
+Return JSON only. Do not return Markdown. Do not wrap the JSON in code fences.
+
+Schema:
+{
+  "context": "string or null",
+  "main_ideas": ["string"],
+  "decisions": ["string"],
+  "action_items": ["string"],
+  "recommendations": ["string"],
+  "insights": ["string"],
+  "challenges_and_risks": ["string"],
+  "next_steps": ["string"],
+  "inferred_people": ["string"],
+  "inferred_projects": ["string"],
+  "inferred_topics": ["string"],
+  "inferred_context": "string or null",
+  "inferred_meeting_type": "string or null"
+}
+
+Rules:
+- Use only information supported by the input.
+- Never invent names, roles, deadlines, projects, or actions.
+- `inferred_*` fields may contain careful interpretation, but only when strongly supported.
+- Keep list items short and atomic.
+- Use empty arrays when nothing is present.
+- Use null for unknown single-value fields.
 """
 
 
@@ -547,6 +603,14 @@ def get_transcript_format_prompt_path(config):
     )
 
 
+def get_obsidian_extract_prompt_path(config):
+    return resolve_config_asset_path(
+        config.get("obsidian_extract_prompt_path"),
+        DEFAULT_OBSIDIAN_EXTRACT_PROMPT_PATH,
+        DEFAULT_OBSIDIAN_EXTRACT_PROMPT_FALLBACK_PATH,
+    )
+
+
 def get_obsidian_template_path(config):
     return resolve_config_asset_path(
         config.get("obsidian_template_path"),
@@ -575,6 +639,142 @@ def render_template(template, context):
     for key, value in context.items():
         rendered = rendered.replace(f"{{{{{key}}}}}", value)
     return rendered
+
+
+def sanitize_json_output(text):
+    sanitized = strip_outer_fenced_block((text or "").replace("\r\n", "\n")).strip()
+    if not sanitized:
+        raise ValueError("Structured JSON output is empty")
+
+    try:
+        return json.loads(sanitized)
+    except json.JSONDecodeError:
+        start = sanitized.find("{")
+        end = sanitized.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            raise
+        return json.loads(sanitized[start : end + 1])
+
+
+def normalize_optional_string(value):
+    if value is None:
+        return None
+
+    text = str(value).strip()
+    return text or None
+
+
+def normalize_string_list(values):
+    if not isinstance(values, list):
+        return []
+
+    normalized = []
+    seen = set()
+    for value in values:
+        text = normalize_optional_string(value)
+        if not text:
+            continue
+        key = text.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(text)
+    return normalized
+
+
+def normalize_obsidian_structured_data(data):
+    if not isinstance(data, dict):
+        data = {}
+
+    return {
+        "context": normalize_optional_string(data.get("context")),
+        "main_ideas": normalize_string_list(data.get("main_ideas")),
+        "decisions": normalize_string_list(data.get("decisions")),
+        "action_items": normalize_string_list(data.get("action_items")),
+        "recommendations": normalize_string_list(data.get("recommendations")),
+        "insights": normalize_string_list(data.get("insights")),
+        "challenges_and_risks": normalize_string_list(data.get("challenges_and_risks")),
+        "next_steps": normalize_string_list(data.get("next_steps")),
+        "inferred_people": normalize_string_list(data.get("inferred_people")),
+        "inferred_projects": normalize_string_list(data.get("inferred_projects")),
+        "inferred_topics": normalize_string_list(data.get("inferred_topics")),
+        "inferred_context": normalize_optional_string(data.get("inferred_context")),
+        "inferred_meeting_type": normalize_optional_string(data.get("inferred_meeting_type")),
+    }
+
+
+def render_markdown_bullets(items):
+    if not items:
+        return "None stated."
+    return "\n".join(f"- {item}" for item in items)
+
+
+def strip_leading_markdown_heading(text):
+    if not text:
+        return ""
+
+    lines = text.splitlines()
+    if not lines:
+        return ""
+
+    if not lines[0].lstrip().startswith("#"):
+        return text
+
+    index = 1
+    while index < len(lines) and not lines[index].strip():
+        index += 1
+    return "\n".join(lines[index:]).strip()
+
+
+def sanitize_obsidian_link_target(value):
+    if not value:
+        return None
+    return re.sub(r'[\[\]\|#^]', "", value).strip() or None
+
+
+def render_entity_links_section(label, folder_name, items):
+    normalized_items = []
+    seen = set()
+    for item in items:
+        link_target = sanitize_obsidian_link_target(item)
+        if not link_target:
+            continue
+        key = link_target.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized_items.append(f"[[{folder_name}/{link_target}]]")
+
+    if not normalized_items:
+        return None
+
+    return f"- {label}: " + ", ".join(normalized_items)
+
+
+def render_frontmatter(metadata):
+    return "---\n" + yaml.safe_dump(metadata, sort_keys=False, allow_unicode=False).strip() + "\n---"
+
+
+def format_filesystem_timestamp(timestamp_value):
+    if timestamp_value is None:
+        return None
+    return time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(timestamp_value))
+
+
+def get_source_file_metadata(source_path):
+    try:
+        stat = os.stat(source_path)
+    except OSError:
+        return {"source_created": None, "source_modified": None}
+
+    source_created = None
+    if hasattr(stat, "st_birthtime"):
+        source_created = format_filesystem_timestamp(stat.st_birthtime)
+
+    return {
+        "source_created": source_created,
+        "source_modified": format_filesystem_timestamp(stat.st_mtime),
+    }
 
 
 def format_timestamp_link(seconds):
@@ -1352,11 +1552,13 @@ class FileProcessor:
 
             if vault_files:
                 obsidian_file = self.write_obsidian_note(
+                    source_path=working_file_path,
                     audio_path=vault_files[0],
                     transcript_path=extracted_text_file,
                     transcript_content=text,
                     transcript_body=transcript_body,
                     summary_path=output_filename,
+                    transcription=transcription,
                 )
                 output_files.append(obsidian_file)
                 vault_files.extend([extracted_text_file, output_filename, obsidian_file])
@@ -1406,6 +1608,113 @@ class FileProcessor:
 
         logging.info(f"Transcribed text saved to {output_filename}")
         return formatted_transcript, linked_transcript or formatted_transcript, output_filename
+
+    def generate_obsidian_structured_data(self, transcript_text, summary_content=""):
+        prompt_path = get_obsidian_extract_prompt_path(self.config)
+        prompt_content = load_prompt(prompt_path, DEFAULT_OBSIDIAN_EXTRACT_PROMPT)
+
+        extraction_input = transcript_text
+        if len(extraction_input) > self.chunking["max_input_chars"] and summary_content.strip():
+            logging.info("Using summary content as Obsidian extraction input due to transcript length")
+            extraction_input = summary_content
+
+        prompt = build_prompt(prompt_content, extraction_input)
+        return normalize_obsidian_structured_data(
+            sanitize_json_output(self.llm_client.generate(prompt))
+        )
+
+    def build_obsidian_frontmatter(self, note_type, source_path, audio_path, transcript_path, structured_data, summary_content, transcript_body, detected_language):
+        source_metadata = get_source_file_metadata(source_path)
+        has_diarization = "Speaker 1:" in transcript_body or "Speaker 2:" in transcript_body
+
+        tags = ["echonotes"]
+        if note_type == "video-note":
+            tags.append("video")
+        else:
+            tags.append("audio")
+        if transcript_path:
+            tags.append("transcript")
+        if summary_content.strip():
+            tags.append("summary")
+        if has_diarization:
+            tags.append("diarized")
+
+        return {
+            "type": note_type,
+            "source": "EchoNotes",
+            "filename": os.path.basename(source_path),
+            "audio_filename": os.path.basename(audio_path),
+            "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "source_created": source_metadata["source_created"],
+            "source_modified": source_metadata["source_modified"],
+            "detected_language": detected_language,
+            "has_summary": bool(summary_content.strip()),
+            "has_transcript": bool(transcript_path),
+            "has_diarization": has_diarization,
+            "inferred_people": structured_data["inferred_people"],
+            "inferred_projects": structured_data["inferred_projects"],
+            "inferred_topics": structured_data["inferred_topics"],
+            "inferred_context": structured_data["inferred_context"],
+            "inferred_meeting_type": structured_data["inferred_meeting_type"],
+            "tags": tags,
+        }
+
+    def build_obsidian_context(
+        self,
+        source_path,
+        audio_path,
+        transcript_path,
+        transcript_body,
+        summary_path,
+        structured_data,
+        transcription,
+    ):
+        summary_content = ""
+        summary_filename = ""
+        if summary_path and os.path.exists(summary_path):
+            with open(summary_path, 'r') as summary_file:
+                summary_content = strip_leading_markdown_heading(summary_file.read().strip())
+            summary_filename = os.path.basename(summary_path)
+
+        note_type = "video-note" if is_video_file(source_path) else "audio-note"
+        frontmatter = self.build_obsidian_frontmatter(
+            note_type,
+            source_path,
+            audio_path,
+            transcript_path,
+            structured_data,
+            summary_content,
+            transcript_body,
+            transcription.get("language"),
+        )
+
+        entity_lines = []
+        for label, folder_name, values in (
+            ("People", "People", structured_data["inferred_people"]),
+            ("Projects", "Projects", structured_data["inferred_projects"]),
+            ("Topics", "Topics", structured_data["inferred_topics"]),
+        ):
+            line = render_entity_links_section(label, folder_name, values)
+            if line:
+                entity_lines.append(line)
+
+        return {
+            "frontmatter": render_frontmatter(frontmatter),
+            "title": os.path.splitext(os.path.basename(audio_path))[0],
+            "audio_filename": os.path.basename(audio_path),
+            "transcript_filename": os.path.basename(transcript_path),
+            "summary_filename": summary_filename,
+            "summary_file_line": f"- Summary: [[{summary_filename}]]" if summary_filename else "- Summary: Not generated",
+            "summary_content": summary_content or "None stated.",
+            "context_section": structured_data["context"] or "None stated.",
+            "transcript_body": transcript_body,
+            "entity_links_section": "\n".join(entity_lines) if entity_lines else "None stated.",
+            "main_ideas_section": render_markdown_bullets(structured_data["main_ideas"]),
+            "decisions_section": render_markdown_bullets(structured_data["decisions"]),
+            "action_items_section": render_markdown_bullets(structured_data["action_items"]),
+            "challenges_and_risks_section": render_markdown_bullets(structured_data["challenges_and_risks"]),
+            "next_steps_section": render_markdown_bullets(structured_data["next_steps"]),
+        }
 
     def generate_formatted_transcript(self, prompt_content, transcript_text):
         if not self.chunking["enabled"] or len(transcript_text) <= self.chunking["max_input_chars"]:
@@ -1494,32 +1803,37 @@ class FileProcessor:
         )
         return self.reduce_partial_summaries(prompt_content, reduced_partials)
 
-    def write_obsidian_note(self, audio_path, transcript_path, transcript_content, transcript_body, summary_path):
-        base_filename = os.path.splitext(os.path.basename(audio_path))[0]
+    def write_obsidian_note(self, source_path, audio_path, transcript_path, transcript_content, transcript_body, summary_path, transcription):
         output_filename = build_output_path(audio_path, ".md")
         template = load_prompt(
             get_obsidian_template_path(self.config),
             DEFAULT_OBSIDIAN_TEMPLATE,
         )
+        structured_data = normalize_obsidian_structured_data({})
 
-        summary_content = ""
-        summary_filename = ""
-        if summary_path and os.path.exists(summary_path):
-            with open(summary_path, 'r') as summary_file:
-                summary_content = summary_file.read().strip()
-            summary_filename = os.path.basename(summary_path)
+        if self.llm_client:
+            try:
+                logging.info(f"Generating structured Obsidian data for {audio_path}")
+                summary_content = ""
+                if summary_path and os.path.exists(summary_path):
+                    with open(summary_path, 'r') as summary_file:
+                        summary_content = summary_file.read().strip()
+                structured_data = self.generate_obsidian_structured_data(transcript_content, summary_content)
+            except Exception as extraction_error:
+                logging.warning(
+                    f"Structured Obsidian extraction failed for {audio_path}; using template defaults: "
+                    f"{extraction_error}"
+                )
 
-        context = {
-            "created": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "title": base_filename,
-            "audio_filename": os.path.basename(audio_path),
-            "transcript_filename": os.path.basename(transcript_path),
-            "summary_filename": summary_filename,
-            "summary_file_line": f"- Summary: [[{summary_filename}]]" if summary_filename else "- Summary: Not generated",
-            "transcript_content": transcript_content,
-            "transcript_body": transcript_body,
-            "summary_content": summary_content,
-        }
+        context = self.build_obsidian_context(
+            source_path,
+            audio_path,
+            transcript_path,
+            transcript_body,
+            summary_path,
+            structured_data,
+            transcription,
+        )
 
         with open(output_filename, 'w') as output_file:
             output_file.write(render_template(template, context))
