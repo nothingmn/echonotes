@@ -4,6 +4,7 @@ import queue
 import re
 import threading
 import time
+import gc
 from contextlib import contextmanager
 import pytesseract
 from watchdog.observers import Observer
@@ -62,6 +63,10 @@ DEFAULT_CHUNK_MAX_INPUT_CHARS = 24000
 DEFAULT_CHUNK_TARGET_CHARS = 16000
 DEFAULT_CHUNK_OVERLAP_CHARS = 400
 DEFAULT_INCOMING_RESCAN_INTERVAL_SECONDS = 5
+DEFAULT_GPU_WHISPER_BATCH_SIZE = 16
+DEFAULT_CPU_WHISPER_BATCH_SIZE = 4
+DEFAULT_GPU_MIN_BATCH_SIZE = 1
+DEFAULT_GPU_OOM_FALLBACK = "cpu"
 TORCH_LOAD_PATCH_LOCK = threading.Lock()
 DEFAULT_TRANSCRIPT_FORMAT_PROMPT = """Rewrite the following raw transcript as clean, readable Markdown.
 
@@ -191,6 +196,25 @@ def get_diarization_settings(config):
         "num_speakers": config.get("diarization_num_speakers"),
         "min_speakers": config.get("diarization_min_speakers"),
         "max_speakers": config.get("diarization_max_speakers"),
+    }
+
+
+def get_transcription_runtime_settings(config):
+    configured_batch_size = config.get("whisper_batch_size")
+    configured_min_batch_size = config.get("whisper_min_batch_size")
+    gpu_oom_fallback = (config.get("gpu_oom_fallback") or DEFAULT_GPU_OOM_FALLBACK).strip().lower()
+
+    batch_size = int(configured_batch_size) if configured_batch_size not in (None, "") else None
+    min_batch_size = (
+        int(configured_min_batch_size)
+        if configured_min_batch_size not in (None, "")
+        else DEFAULT_GPU_MIN_BATCH_SIZE
+    )
+
+    return {
+        "batch_size": batch_size,
+        "min_batch_size": max(1, min_batch_size),
+        "gpu_oom_fallback": gpu_oom_fallback if gpu_oom_fallback in ("cpu", "fail") else DEFAULT_GPU_OOM_FALLBACK,
     }
 
 
@@ -784,6 +808,41 @@ def split_text_into_chunks(text, target_chars, overlap_chars):
     return chunks
 
 
+def get_default_batch_size_for_device(device):
+    return DEFAULT_GPU_WHISPER_BATCH_SIZE if device == "cuda" else DEFAULT_CPU_WHISPER_BATCH_SIZE
+
+
+def build_batch_size_plan(device, preferred_batch_size=None, min_batch_size=1):
+    batch_size = preferred_batch_size or get_default_batch_size_for_device(device)
+    batch_size = max(1, int(batch_size))
+
+    if device != "cuda":
+        return [batch_size]
+
+    floor = max(1, int(min_batch_size))
+    plan = []
+    current = batch_size
+
+    while current >= floor:
+        plan.append(current)
+        if current == floor:
+            break
+        next_size = max(floor, current // 2)
+        if next_size == current:
+            break
+        current = next_size
+
+    if plan[-1] != floor:
+        plan.append(floor)
+
+    return plan
+
+
+def is_cuda_oom_error(error):
+    message = str(error).lower()
+    return "cuda out of memory" in message or "cuda failed with error out of memory" in message
+
+
 def build_prompt(prompt_instructions, input_text, heading="INPUT"):
     return f"{prompt_instructions}\n\n# {heading}:\n\n{input_text}"
 
@@ -1013,55 +1072,118 @@ def extract_text_from_txt(file_name):
         
 
 class WhisperXTranscriber:
-    def __init__(self, whisper_model, diarization_settings=None):
+    def __init__(self, whisper_model, diarization_settings=None, runtime_settings=None):
         import torch
 
         self.whisper_model = whisper_model
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.compute_type = "float16" if self.device == "cuda" else "int8"
-        self.batch_size = 16 if self.device == "cuda" else 4
+        self.runtime_settings = runtime_settings or {}
+        self.batch_size = self.runtime_settings.get("batch_size") or get_default_batch_size_for_device(self.device)
+        self.min_batch_size = self.runtime_settings.get("min_batch_size", DEFAULT_GPU_MIN_BATCH_SIZE)
+        self.gpu_oom_fallback = self.runtime_settings.get("gpu_oom_fallback", DEFAULT_GPU_OOM_FALLBACK)
         self.align_models = {}
+        self.models = {}
         self.diarization_settings = diarization_settings or {}
-        self.diarization_model = None
+        self.diarization_models = {}
 
         logging.info(
             f"Loading WhisperX model at startup "
-            f"(device={self.device}, compute_type={self.compute_type}, model={self.whisper_model})"
+            f"(device={self.device}, compute_type={self._get_compute_type(self.device)}, "
+            f"batch_size={self.batch_size}, model={self.whisper_model})"
         )
-        with whisperx_torch_load_compat():
-            self.model = whisperx.load_model(
-                self.whisper_model,
-                self.device,
-                compute_type=self.compute_type,
-            )
+        self._get_model(self.device)
 
         if self.diarization_settings.get("enabled", True):
             hf_token = self.diarization_settings.get("hf_token")
             if hf_token:
-                from whisperx.diarize import DiarizationPipeline
-
-                logging.info(f"Loading WhisperX diarization pipeline at startup (device={self.device})")
-                with whisperx_torch_load_compat():
-                    self.diarization_model = DiarizationPipeline(
-                        model_name=self.diarization_settings.get("model_name"),
-                        use_auth_token=hf_token,
-                        device=self.device,
-                    )
+                self._get_diarization_model(self.device)
             else:
                 logging.warning(
                     "Speaker diarization is enabled but no diarization_hf_token is configured; "
                     "transcripts will not include speaker labels"
                 )
 
-    def _get_align_model(self, language_code):
-        if language_code not in self.align_models:
-            logging.info(f"Loading WhisperX alignment model for language: {language_code}")
+    def _get_compute_type(self, device):
+        return "float16" if device == "cuda" else "int8"
+
+    def _clear_runtime_memory(self, device):
+        gc.collect()
+        if device == "cuda":
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                if hasattr(torch.cuda, "ipc_collect"):
+                    torch.cuda.ipc_collect()
+
+    def _get_model(self, device):
+        if device not in self.models:
+            logging.info(
+                f"Loading WhisperX model "
+                f"(device={device}, compute_type={self._get_compute_type(device)}, model={self.whisper_model})"
+            )
             with whisperx_torch_load_compat():
-                self.align_models[language_code] = whisperx.load_align_model(
-                    language_code=language_code,
-                    device=self.device,
+                self.models[device] = whisperx.load_model(
+                    self.whisper_model,
+                    device=device,
+                    compute_type=self._get_compute_type(device),
                 )
-        return self.align_models[language_code]
+        return self.models[device]
+
+    def _get_align_model(self, language_code, device):
+        cache_key = (device, language_code)
+        if cache_key not in self.align_models:
+            logging.info(f"Loading WhisperX alignment model for language: {language_code} on {device}")
+            with whisperx_torch_load_compat():
+                self.align_models[cache_key] = whisperx.load_align_model(
+                    language_code=language_code,
+                    device=device,
+                )
+        return self.align_models[cache_key]
+
+    def _get_diarization_model(self, device):
+        if device not in self.diarization_models:
+            from whisperx.diarize import DiarizationPipeline
+
+            logging.info(f"Loading WhisperX diarization pipeline at startup (device={device})")
+            with whisperx_torch_load_compat():
+                self.diarization_models[device] = DiarizationPipeline(
+                    model_name=self.diarization_settings.get("model_name"),
+                    use_auth_token=self.diarization_settings.get("hf_token"),
+                    device=device,
+                )
+        return self.diarization_models[device]
+
+    def _transcribe_with_device(self, audio_path, audio, device):
+        batch_plan = build_batch_size_plan(
+            device,
+            preferred_batch_size=self.batch_size if device == self.device else None,
+            min_batch_size=self.min_batch_size,
+        )
+        model = self._get_model(device)
+        last_error = None
+
+        for batch_size in batch_plan:
+            try:
+                if batch_size != batch_plan[0]:
+                    logging.info(
+                        f"Retrying WhisperX transcription for {audio_path} "
+                        f"with smaller batch_size={batch_size} on {device}"
+                    )
+                return model.transcribe(audio, batch_size=batch_size)
+            except RuntimeError as error:
+                last_error = error
+                if device != "cuda" or not is_cuda_oom_error(error):
+                    raise
+
+                logging.warning(
+                    f"WhisperX GPU transcription ran out of memory for {audio_path} "
+                    f"with batch_size={batch_size}: {error}"
+                )
+                self._clear_runtime_memory(device)
+
+        if last_error:
+            raise last_error
 
     def transcribe(self, audio_path):
         try:
@@ -1071,19 +1193,33 @@ class WhisperXTranscriber:
             )
 
             audio = whisperx.load_audio(audio_path)
-            result = self.model.transcribe(audio, batch_size=self.batch_size)
+            transcribe_device = self.device
+
+            try:
+                result = self._transcribe_with_device(audio_path, audio, self.device)
+            except RuntimeError as error:
+                if self.device != "cuda" or not is_cuda_oom_error(error) or self.gpu_oom_fallback != "cpu":
+                    raise
+
+                logging.warning(
+                    f"Falling back to CPU transcription for {audio_path} after GPU OOM"
+                )
+                self._clear_runtime_memory("cuda")
+                transcribe_device = "cpu"
+                result = self._transcribe_with_device(audio_path, audio, transcribe_device)
+
             transcript_result = result
 
             segments = transcript_result.get("segments", [])
             if segments and result.get("language"):
                 try:
-                    align_model, metadata = self._get_align_model(result["language"])
+                    align_model, metadata = self._get_align_model(result["language"], transcribe_device)
                     aligned_result = whisperx.align(
                         segments,
                         align_model,
                         metadata,
                         audio,
-                        self.device,
+                        transcribe_device,
                         return_char_alignments=False,
                     )
                     transcript_result = aligned_result
@@ -1093,7 +1229,11 @@ class WhisperXTranscriber:
                         f"WhisperX alignment failed for {audio_path}; using unaligned transcript: {align_error}"
                     )
 
-            if self.diarization_model and segments:
+            diarization_model = None
+            if self.diarization_settings.get("enabled", True) and self.diarization_settings.get("hf_token"):
+                diarization_model = self._get_diarization_model(transcribe_device)
+
+            if diarization_model and segments:
                 try:
                     diarization_kwargs = {}
                     for key in ("num_speakers", "min_speakers", "max_speakers"):
@@ -1101,7 +1241,7 @@ class WhisperXTranscriber:
                         if value is not None and value != "":
                             diarization_kwargs[key] = int(value)
 
-                    diarize_segments = self.diarization_model(audio, **diarization_kwargs)
+                    diarize_segments = diarization_model(audio, **diarization_kwargs)
                     segments = assign_diarization_to_transcript_segments(segments, diarize_segments)
                     transcript_result["segments"] = segments
                 except Exception as diarization_error:
@@ -1421,6 +1561,7 @@ class ProcessingWorker(threading.Thread):
         transcriber = WhisperXTranscriber(
             self.whisper_model,
             get_diarization_settings(self.config),
+            get_transcription_runtime_settings(self.config),
         )
         llm_client = build_llm_client(self.config)
         self.processor = FileProcessor(

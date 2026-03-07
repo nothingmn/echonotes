@@ -259,6 +259,9 @@ llm:
   max_tokens: 2048
 
 whisper_model: "base" # Optional; defaults to 'base' on CPU and 'small' on GPU when omitted
+whisper_batch_size: null # Optional; defaults to 16 on GPU and 4 on CPU
+whisper_min_batch_size: 1 # On GPU, OOM retries back off down to this batch size
+gpu_oom_fallback: "cpu" # One of: cpu, fail
 worker_count: 2 # Number of background workers to run concurrently; on GPU start with 1
 diarization_enabled: true # Enable WhisperX speaker diarization when configured
 diarization_hf_token: "" # Required for speaker labels via pyannote diarization
@@ -300,6 +303,8 @@ If you mount an Obsidian vault folder at `vault_path`, EchoNotes also copies aud
 If `obsidian_template_path` is not provided, EchoNotes looks for `obsidian-template.md` next to the summarization prompt. If that file is missing, it uses a built-in plain template.
 
 For speaker labels in audio/video transcripts, configure `diarization_hf_token`. When diarization is available, EchoNotes writes labels like `Speaker 1` and `Speaker 2` into the timestamped transcript lines.
+
+On GPU, WhisperX transcription automatically retries with smaller batch sizes if it runs out of memory. If GPU retries still fail and `gpu_oom_fallback` is set to `cpu`, EchoNotes retries that file on CPU instead of leaving the queue blocked.
 
 ### LLM Providers
 

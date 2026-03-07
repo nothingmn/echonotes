@@ -14,6 +14,9 @@ llm:
   site_name: ""  # optional, used by openrouter
 
 whisper_model: "tiny"  # optional; if omitted EchoNotes defaults to "base" on CPU and "small" on GPU
+whisper_batch_size: null  # optional; defaults to 16 on GPU and 4 on CPU
+whisper_min_batch_size: 1  # on GPU, OOM retries back off down to this batch size
+gpu_oom_fallback: "cpu"  # one of: cpu, fail
 worker_count: 2  # number of background processing workers; on GPU, 1 is usually the safe default
 diarization_enabled: true  # enable WhisperX speaker diarization when a Hugging Face token is configured
 diarization_hf_token: ""  # required for speaker labels via pyannote/WhisperX diarization
